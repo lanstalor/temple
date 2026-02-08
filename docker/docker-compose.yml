@@ -1,0 +1,46 @@
+services:
+  temple-chromadb:
+    image: chromadb/chroma:latest
+    volumes:
+      - ../data/chromadb:/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
+    restart: unless-stopped
+    networks:
+      - temple
+
+  temple-memory:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8100:8100"
+    volumes:
+      - ../data/graph:/app/data/graph
+      - ../data/audit:/app/data/audit
+    environment:
+      - TEMPLE_HOST=0.0.0.0
+      - TEMPLE_PORT=8100
+      - TEMPLE_CHROMA_MODE=http
+      - TEMPLE_CHROMA_HOST=temple-chromadb
+      - TEMPLE_CHROMA_PORT=8000
+      - TEMPLE_LOG_LEVEL=info
+      - TEMPLE_KUZU_DIR=/app/data/graph/kuzu
+      - TEMPLE_AUDIT_DIR=/app/data/audit
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: "1"
+    depends_on:
+      - temple-chromadb
+    restart: unless-stopped
+    networks:
+      - temple
+
+networks:
+  temple:
+    driver: bridge

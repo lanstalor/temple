@@ -1,0 +1,10 @@
+services:
+  temple-chromadb:
+    ports:
+      - "8000:8000"
+
+  temple-memory:
+    environment:
+      - TEMPLE_LOG_LEVEL=debug
+    volumes:
+      - ../src:/app/src
