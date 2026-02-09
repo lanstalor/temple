@@ -209,10 +209,13 @@ pydantic-settings>=2.0  # Config from env vars
 
 ### Authentication
 
-When `TEMPLE_API_KEY` is set, all MCP endpoints require a Bearer token in the `Authorization` header. The `/health` endpoint remains unauthenticated (used by Docker healthcheck).
+Temple supports **dual authentication** when `TEMPLE_API_KEY` is set. The `/health` endpoint remains unauthenticated (used by Docker healthcheck).
 
 - **Auth disabled** (default): No `TEMPLE_API_KEY` set — open access, suitable for local dev.
-- **Auth enabled**: Set `TEMPLE_API_KEY` to a strong random string. MCP clients must send `Authorization: Bearer <key>`.
+- **Auth enabled**: Set `TEMPLE_API_KEY` to a strong random string. Two auth methods work simultaneously:
+
+#### 1. Static Bearer Token
+MCP clients send `Authorization: Bearer <key>` with the static API key. Works with Claude Code, Copilot Studio, curl, and any MCP client.
 
 **Claude Code client config** (`~/.claude/mcp.json`):
 ```json
@@ -228,6 +231,23 @@ When `TEMPLE_API_KEY` is set, all MCP endpoints require a Bearer token in the `A
   }
 }
 ```
+
+#### 2. OAuth 2.1 (Authorization Code + PKCE)
+Claude.ai's remote MCP connector requires OAuth 2.1. Temple advertises OAuth metadata at `/.well-known/oauth-protected-resource` and supports:
+
+- **Pre-registered client** — set `TEMPLE_OAUTH_CLIENT_ID` + `TEMPLE_OAUTH_CLIENT_SECRET` to lock down access (recommended for public endpoints). Dynamic registration is disabled when a client is pre-registered.
+- **Dynamic client registration** — if no client is pre-registered, any client can auto-register (suitable for trusted networks only).
+- **Authorization code flow with PKCE** — auto-approved (single-user server, no consent screen)
+- **Token exchange** — issues in-memory access/refresh tokens (lost on restart; clients re-register automatically)
+
+Set `TEMPLE_BASE_URL` to the public-facing URL (e.g. `https://temple.tython.ca`) so OAuth metadata endpoints advertise correct URLs.
+
+**Claude.ai remote MCP config**: Enter the MCP URL and the pre-registered client credentials:
+- URL: `https://temple.tython.ca/mcp`
+- Client ID: value of `TEMPLE_OAUTH_CLIENT_ID`
+- Client Secret: value of `TEMPLE_OAUTH_CLIENT_SECRET`
+
+Claude.ai handles the authorization code + PKCE flow automatically.
 
 ---
 

@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     # Authentication (empty = no auth, for local dev)
     api_key: str = ""
 
+    # Base URL for OAuth metadata endpoints (e.g. https://temple.tython.ca)
+    base_url: str = ""
+
+    # OAuth 2.1 pre-registered client (empty = dynamic registration allowed)
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+
     # ChromaDB
     chroma_mode: Literal["embedded", "http"] = "embedded"
     chroma_host: str = "temple-chromadb"
