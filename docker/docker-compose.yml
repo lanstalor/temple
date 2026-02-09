@@ -16,6 +16,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    env_file:
+      - ../.env
     ports:
       - "8100:8100"
     volumes:

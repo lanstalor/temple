@@ -207,6 +207,28 @@ pydantic-settings>=2.0  # Config from env vars
 
 **Cloudflare Tunnel:** ID `2bc0c79a-a0a4-46de-a56e-42dca3d60425`, runs as systemd service `cloudflared-temple.service`.
 
+### Authentication
+
+When `TEMPLE_API_KEY` is set, all MCP endpoints require a Bearer token in the `Authorization` header. The `/health` endpoint remains unauthenticated (used by Docker healthcheck).
+
+- **Auth disabled** (default): No `TEMPLE_API_KEY` set — open access, suitable for local dev.
+- **Auth enabled**: Set `TEMPLE_API_KEY` to a strong random string. MCP clients must send `Authorization: Bearer <key>`.
+
+**Claude Code client config** (`~/.claude/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "temple": {
+      "type": "streamable-http",
+      "url": "https://temple.tython.ca/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-api-key>"
+      }
+    }
+  }
+}
+```
+
 ---
 
 ## Verification

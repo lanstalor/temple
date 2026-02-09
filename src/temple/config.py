@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     port: int = 8100
     log_level: str = "info"
 
+    # Authentication (empty = no auth, for local dev)
+    api_key: str = ""
+
     # ChromaDB
     chroma_mode: Literal["embedded", "http"] = "embedded"
     chroma_host: str = "temple-chromadb"
