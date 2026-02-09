@@ -57,7 +57,7 @@ class TempleAuthProvider(InMemoryOAuthProvider):
                 client_id=oauth_client_id,
                 client_secret=oauth_client_secret,
                 redirect_uris=[AnyUrl("https://placeholder.invalid/callback")],
-                token_endpoint_auth_method="client_secret_post",
+                token_endpoint_auth_method="client_secret_basic",
                 grant_types=["authorization_code", "refresh_token"],
                 response_types=["code"],
                 scope="temple",
