@@ -17,9 +17,18 @@ def register_observation_tools(mcp, broker: MemoryBroker) -> None:
     ) -> dict[str, Any]:
         """Add observations (facts) to an existing entity.
 
+        Observations are individual facts that describe an entity. Use this to
+        incrementally build up knowledge — each time you learn something new
+        about an entity, add it as an observation rather than replacing everything.
+
+        Prefer observations over memories when the fact is clearly about a specific
+        entity (e.g., "Speaks French" on a person entity, rather than a standalone
+        memory "Lance speaks French").
+
         Args:
-            entity_name: Name of the entity to add observations to
-            observations: List of observation strings to add
+            entity_name: Name of the entity to add observations to (must already exist)
+            observations: List of factual statements to add (e.g.,
+                ["Joined the company in 2020", "Manages the data team"])
 
         Returns:
             Result indicating success/failure
@@ -38,9 +47,12 @@ def register_observation_tools(mcp, broker: MemoryBroker) -> None:
     ) -> dict[str, Any]:
         """Remove specific observations from an entity.
 
+        Use this to correct outdated or incorrect facts. The observation text
+        must match exactly — use get_entity first to see current observations.
+
         Args:
             entity_name: Name of the entity
-            observations: List of observation strings to remove (exact match)
+            observations: List of observation strings to remove (exact text match)
 
         Returns:
             Result indicating success/failure

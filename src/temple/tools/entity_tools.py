@@ -16,9 +16,20 @@ def register_entity_tools(mcp, broker: MemoryBroker) -> None:
     ) -> list[dict[str, Any]]:
         """Create entities in the knowledge graph.
 
+        Use entities for things with a persistent identity — people, places, projects,
+        organizations, technologies, pets, etc. If something has a name and you'll
+        refer to it again, it should be an entity.
+
+        Always use get_entity first to check if the entity already exists. If it does,
+        use add_observations to attach new facts instead of creating a duplicate.
+
         Args:
-            entities: List of entity dicts with 'name', 'entity_type', and optional 'observations'
-                Example: [{"name": "Python", "entity_type": "language", "observations": ["High-level language"]}]
+            entities: List of entity dicts with 'name', 'entity_type', and optional 'observations'.
+                - name: Unique identifier (e.g., "Python", "Nova Scotia")
+                - entity_type: Category string (e.g., "person", "place", "project",
+                  "organization", "technology", "pet", "concept")
+                - observations: List of factual statements about the entity
+                  (e.g., ["Founded in 1991", "Created by Guido van Rossum"])
 
         Returns:
             List of creation results
@@ -33,10 +44,14 @@ def register_entity_tools(mcp, broker: MemoryBroker) -> None:
     ) -> dict[str, Any]:
         """Update an existing entity's properties.
 
+        Use this to change an entity's type or replace all observations.
+        To add new facts without replacing existing ones, use add_observations instead.
+
         Args:
             name: Entity name to update
             entity_type: New entity type (optional)
-            observations: Replace all observations (optional)
+            observations: Replace ALL observations with this list (optional).
+                Caution: this overwrites existing observations entirely.
 
         Returns:
             Update result
@@ -53,7 +68,10 @@ def register_entity_tools(mcp, broker: MemoryBroker) -> None:
     def delete_entities(
         names: list[str],
     ) -> list[dict[str, Any]]:
-        """Delete entities and their relations from the knowledge graph.
+        """Delete entities and all their relations from the knowledge graph.
+
+        This removes the entity and any relations connecting to or from it.
+        Use with care — this is not reversible.
 
         Args:
             names: List of entity names to delete
@@ -69,11 +87,15 @@ def register_entity_tools(mcp, broker: MemoryBroker) -> None:
     ) -> dict[str, Any]:
         """Get a single entity by name with all its details.
 
+        Use this to check if an entity exists before creating it, and to see its
+        current observations and type. This is the best way to look up a specific
+        known entity.
+
         Args:
-            name: Entity name
+            name: Entity name (exact match)
 
         Returns:
-            Entity details or error if not found
+            Entity details including type and observations, or error if not found
         """
         entity = broker.get_entity(name)
         if entity is None:
@@ -88,12 +110,17 @@ def register_entity_tools(mcp, broker: MemoryBroker) -> None:
     ) -> list[dict[str, Any]]:
         """Search entities by type and/or scope.
 
+        Use this to discover what's in the knowledge graph — for example,
+        "what people do I know about?" (entity_type="person") or
+        "what entities exist in this project?" (scope="project:temple").
+
         Args:
-            entity_type: Filter by entity type (e.g., 'person', 'project')
+            entity_type: Filter by entity type (e.g., "person", "project",
+                "organization", "technology", "place")
             scope: Filter by scope
             limit: Max results (default 50)
 
         Returns:
-            List of matching entities
+            List of matching entities with their types and observations
         """
         return broker.search_entities(entity_type=entity_type, scope=scope, limit=limit)

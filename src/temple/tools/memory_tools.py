@@ -19,11 +19,22 @@ def register_memory_tools(mcp, broker: MemoryBroker) -> None:
     ) -> dict[str, Any]:
         """Store a new memory with automatic embedding and deduplication.
 
+        Use this for preferences, decisions, experiences, notes, and freeform knowledge.
+        Content is automatically embedded for semantic search. Duplicate content
+        (by hash) is detected and skipped.
+
+        Before storing, use recall_memory to check if this knowledge already exists.
+
         Args:
-            content: The text content to remember
-            tags: Optional categorization tags
-            metadata: Optional key-value metadata
-            scope: Target scope (global, project:<name>, session:<id>). Defaults to current active scope.
+            content: The text content to remember. Be specific and self-contained —
+                this text is what semantic search matches against.
+            tags: Categorization tags for filtering (e.g., ["preference", "food"],
+                ["decision", "architecture"], ["learning", "python"]).
+                Consistent tagging makes search_memories more effective.
+            metadata: Arbitrary key-value pairs (e.g., {"source": "conversation",
+                "confidence": "high"}). Stored but not embedded.
+            scope: Target scope (global, project:<name>, session:<id>).
+                Defaults to the most specific active scope.
 
         Returns:
             The stored memory entry with its ID
@@ -39,13 +50,18 @@ def register_memory_tools(mcp, broker: MemoryBroker) -> None:
     ) -> list[dict[str, Any]]:
         """Retrieve memories by semantic similarity.
 
-        Searches across all active context tiers and ranks by precedence (session > project > global)
-        and cosine similarity.
+        This is the primary semantic search tool. Results are ranked by a combination
+        of scope precedence (session > project > global) and cosine similarity,
+        so more specific scopes surface first.
+
+        Use this when you need to find knowledge related to a topic, question, or concept.
 
         Args:
-            query: Natural language query to search for
+            query: Natural language query — describe what you're looking for
+                conversationally (e.g., "dietary preferences" not just "food")
             n_results: Maximum number of results to return (default 5)
-            scope: Limit search to specific scope. Defaults to all active scopes.
+            scope: Limit search to a specific scope (e.g., "project:temple").
+                Defaults to all active scopes.
 
         Returns:
             List of matching memories with similarity scores
@@ -58,9 +74,11 @@ def register_memory_tools(mcp, broker: MemoryBroker) -> None:
         query: str,
         n_results: int = 5,
     ) -> list[dict[str, Any]]:
-        """Recall memories using natural language - searches across all active scopes.
+        """Quick semantic search across all active scopes.
 
-        Convenience wrapper around retrieve_memory that always searches all active contexts.
+        Convenience wrapper around retrieve_memory — use this for fast lookups when
+        you don't need to filter by scope. Ideal as a first check before storing
+        new knowledge ("do I already know this?").
 
         Args:
             query: Natural language description of what you're looking for
@@ -81,10 +99,14 @@ def register_memory_tools(mcp, broker: MemoryBroker) -> None:
     ) -> list[dict[str, Any]]:
         """Search memories by text query and/or tags.
 
+        Use this when you want to filter by tags or scope rather than (or in
+        addition to) semantic similarity. For example, find all memories tagged
+        "preference" or all memories in a specific project scope.
+
         Args:
-            query: Optional text query for semantic search
-            tags: Optional tags to filter by
-            scope: Optional scope to limit search
+            query: Optional text query for semantic similarity matching
+            tags: Optional tags to filter by — memories must have ALL specified tags
+            scope: Optional scope to limit search (e.g., "global", "project:temple")
             n_results: Maximum results (default 10)
 
         Returns:
@@ -101,6 +123,9 @@ def register_memory_tools(mcp, broker: MemoryBroker) -> None:
         scope: str | None = None,
     ) -> dict[str, Any]:
         """Delete a memory by its ID.
+
+        Use this to clean up outdated, incorrect, or duplicate memories.
+        The memory_id is the content hash returned when the memory was stored.
 
         Args:
             memory_id: The memory's content hash ID

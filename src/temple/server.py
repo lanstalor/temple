@@ -65,8 +65,37 @@ if settings.api_key:
 # Create MCP server
 mcp = FastMCP(
     "Temple Memory Broker",
-    instructions="Context-aware persistent memory for AI agents. "
-    "Store, retrieve, and connect knowledge across sessions and projects.",
+    instructions="""\
+Temple is a personal knowledge graph — a persistent, growing foundation of knowledge that makes AI agents more useful over time. It stores memories, entities, and their relationships so that context is never lost between conversations.
+
+## Core Concepts
+
+**Memories** are freeform text with optional tags and metadata. Use them for preferences, decisions, experiences, notes, and anything that doesn't fit neatly as a named entity. They are embedded for semantic search.
+
+**Entities** are named nodes in the knowledge graph with a type and structured observations (facts). Use them for people, places, projects, organizations, technologies, pets — anything with an identity that persists and accumulates facts over time.
+
+**Relations** connect entities directionally with a descriptive verb (e.g., "works_at", "lives_in", "manages", "built_with"). They form the graph structure that lets you traverse connections.
+
+**Observations** are individual facts attached to entities. Add new facts as you learn them rather than replacing all observations.
+
+## Context Hierarchy
+
+Temple has three scopes with strict precedence: **session > project > global**.
+- **Global**: Knowledge that applies everywhere (personal facts, preferences, long-term knowledge)
+- **Project**: Knowledge scoped to a specific project or domain (set with set_context)
+- **Session**: Ephemeral knowledge for one conversation (set with set_context)
+
+When retrieving, Temple searches all active scopes and ranks results by precedence, so session-scoped memories surface first. When storing, memories go to the most specific active scope by default.
+
+## Best Practices
+
+1. **Recall before storing.** Always check what Temple already knows before creating new memories or entities. Use recall_memory or get_entity to avoid duplicates.
+2. **Use entities for things with identity.** If something has a name and you'll refer to it again, make it an entity. Attach facts as observations. Connect it to other entities with relations.
+3. **Use memories for everything else.** Preferences, decisions, context, freeform notes — store as memories with descriptive tags.
+4. **Tag consistently.** Tags like "preference", "decision", "project-note", "learning" make memories findable beyond semantic search.
+5. **Build the graph organically.** When you learn something new about an existing entity, add observations. When you discover a connection, create a relation. The graph grows naturally through use.
+6. **Scope appropriately.** Project-specific knowledge should be stored in a project context. Universal knowledge goes to global. Use get_context to check where you are before storing.
+""",
     auth=_auth,
 )
 
