@@ -184,6 +184,367 @@ def _build_openapi_schema(base_url: str) -> dict[str, Any]:
     }
 
 
+def _build_actions_openapi_schema(base_url: str) -> dict[str, Any]:
+    """Build a stricter OpenAPI schema for GPT Actions imports."""
+
+    def json_response(description: str) -> dict[str, Any]:
+        return {
+            "description": description,
+            "content": {
+                "application/json": {
+                    "schema": {"type": "object"},
+                }
+            },
+        }
+
+    def req(name: str) -> dict[str, Any]:
+        return {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": f"#/components/schemas/{name}"},
+                }
+            },
+        }
+
+    return {
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Temple REST API (Actions)",
+            "version": "0.1.0",
+            "description": (
+                "Action-friendly OpenAPI schema for Temple. "
+                "Use Authorization: Bearer <TEMPLE_API_KEY>."
+            ),
+        },
+        "servers": [{"url": base_url}],
+        "security": [{"bearerAuth": []}],
+        "paths": {
+            "/health": {
+                "get": {
+                    "summary": "Health check",
+                    "operationId": "healthCheck",
+                    "security": [],
+                    "responses": {"200": json_response("Service health")},
+                }
+            },
+            "/api/v1/admin/stats": {
+                "get": {
+                    "summary": "Get platform stats",
+                    "operationId": "getAdminStats",
+                    "responses": {"200": json_response("Platform stats")},
+                }
+            },
+            "/api/v1/context": {
+                "get": {
+                    "summary": "Get active context",
+                    "operationId": "getContext",
+                    "responses": {"200": json_response("Active context")},
+                },
+                "post": {
+                    "summary": "Set active context",
+                    "operationId": "setContext",
+                    "requestBody": req("ContextSetRequest"),
+                    "responses": {"200": json_response("Updated context")},
+                },
+            },
+            "/api/v1/memory/store": {
+                "post": {
+                    "summary": "Store memory item",
+                    "operationId": "storeMemory",
+                    "requestBody": req("MemoryStoreRequest"),
+                    "responses": {"200": json_response("Stored memory")},
+                }
+            },
+            "/api/v1/memory/search": {
+                "post": {
+                    "summary": "Search memories",
+                    "operationId": "searchMemories",
+                    "requestBody": req("MemorySearchRequest"),
+                    "responses": {"200": json_response("Memory search results")},
+                }
+            },
+            "/api/v1/memory/retrieve": {
+                "post": {
+                    "summary": "Semantic memory retrieval",
+                    "operationId": "retrieveMemory",
+                    "requestBody": req("MemoryRetrieveRequest"),
+                    "responses": {"200": json_response("Retrieved memories")},
+                }
+            },
+            "/api/v1/entities/create": {
+                "post": {
+                    "summary": "Create entities",
+                    "operationId": "createEntities",
+                    "requestBody": req("EntityCreateRequest"),
+                    "responses": {"200": json_response("Entity creation result")},
+                }
+            },
+            "/api/v1/entities/{name}": {
+                "get": {
+                    "summary": "Get entity",
+                    "operationId": "getEntity",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                            "description": "Entity name",
+                        }
+                    ],
+                    "responses": {"200": json_response("Entity details")},
+                },
+                "patch": {
+                    "summary": "Update entity",
+                    "operationId": "updateEntity",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                            "description": "Entity name",
+                        }
+                    ],
+                    "requestBody": req("EntityUpdateRequest"),
+                    "responses": {"200": json_response("Update result")},
+                },
+            },
+            "/api/v1/relations/path": {
+                "post": {
+                    "summary": "Find relationship path",
+                    "operationId": "findRelationshipPath",
+                    "requestBody": req("RelationPathRequest"),
+                    "responses": {"200": json_response("Path result")},
+                }
+            },
+            "/api/v1/relationship-map": {
+                "get": {
+                    "summary": "Get relationship map around an entity",
+                    "operationId": "getRelationshipMap",
+                    "parameters": [
+                        {
+                            "name": "entity",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "depth",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1, "maximum": 4, "default": 2},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+                        },
+                        {
+                            "name": "scope",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                    ],
+                    "responses": {"200": json_response("Relationship map")},
+                }
+            },
+            "/api/v1/ingest/submit": {
+                "post": {
+                    "summary": "Submit content for ingest and enrichment",
+                    "operationId": "submitIngestItem",
+                    "requestBody": req("IngestSubmitRequest"),
+                    "responses": {"200": json_response("Queued ingest job")},
+                }
+            },
+            "/api/v1/ingest/jobs/{job_id}": {
+                "get": {
+                    "summary": "Get ingest job status",
+                    "operationId": "getIngestJob",
+                    "parameters": [
+                        {
+                            "name": "job_id",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "responses": {"200": json_response("Ingest job status")},
+                }
+            },
+            "/api/v1/ingest/reviews": {
+                "get": {
+                    "summary": "List ingest review queue",
+                    "operationId": "listIngestReviews",
+                    "parameters": [
+                        {
+                            "name": "status",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string", "default": "pending"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 100, "minimum": 1, "maximum": 1000},
+                        },
+                    ],
+                    "responses": {"200": json_response("Review queue entries")},
+                }
+            },
+            "/api/v1/ingest/reviews/{review_id}": {
+                "post": {
+                    "summary": "Approve or reject inferred relation",
+                    "operationId": "reviewIngestRelation",
+                    "parameters": [
+                        {
+                            "name": "review_id",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "requestBody": req("IngestReviewDecisionRequest"),
+                    "responses": {"200": json_response("Review decision result")},
+                }
+            },
+            "/api/v1/admin/graph/export": {
+                "get": {
+                    "summary": "Export graph for visualization",
+                    "operationId": "exportGraph",
+                    "parameters": [
+                        {
+                            "name": "scope",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 10000, "minimum": 1, "maximum": 50000},
+                        },
+                        {
+                            "name": "include_memories",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "boolean", "default": False},
+                        },
+                        {
+                            "name": "memory_limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 5000, "minimum": 1, "maximum": 100000},
+                        },
+                    ],
+                    "responses": {"200": json_response("Graph export payload")},
+                }
+            },
+        },
+        "components": {
+            "securitySchemes": {
+                "bearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "APIKey",
+                }
+            },
+            "schemas": {
+                "MemoryStoreRequest": {
+                    "type": "object",
+                    "required": ["content"],
+                    "properties": {
+                        "content": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "metadata": {"type": "object", "additionalProperties": True},
+                        "scope": {"type": "string"},
+                    },
+                },
+                "MemoryRetrieveRequest": {
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {
+                        "query": {"type": "string"},
+                        "n_results": {"type": "integer", "default": 5},
+                        "scope": {"type": "string"},
+                    },
+                },
+                "MemorySearchRequest": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "scope": {"type": "string"},
+                        "n_results": {"type": "integer", "default": 10},
+                    },
+                },
+                "EntityCreateRequest": {
+                    "type": "object",
+                    "required": ["entities"],
+                    "properties": {
+                        "entities": {
+                            "type": "array",
+                            "items": {"type": "object", "additionalProperties": True},
+                        }
+                    },
+                },
+                "EntityUpdateRequest": {
+                    "type": "object",
+                    "properties": {
+                        "entity_type": {"type": "string"},
+                        "observations": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "RelationPathRequest": {
+                    "type": "object",
+                    "required": ["source", "target"],
+                    "properties": {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "max_hops": {"type": "integer", "default": 5},
+                    },
+                },
+                "ContextSetRequest": {
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string"},
+                        "session": {"type": "string"},
+                    },
+                },
+                "IngestSubmitRequest": {
+                    "type": "object",
+                    "required": ["item_type", "actor_id", "source", "content"],
+                    "properties": {
+                        "item_type": {"type": "string"},
+                        "actor_id": {"type": "string"},
+                        "source": {"type": "string"},
+                        "content": {"type": "string"},
+                        "source_id": {"type": "string"},
+                        "timestamp": {"type": "string"},
+                        "idempotency_key": {"type": "string"},
+                        "metadata": {"type": "object", "additionalProperties": True},
+                        "scope": {"type": "string", "default": "global"},
+                    },
+                },
+                "IngestReviewDecisionRequest": {
+                    "type": "object",
+                    "required": ["decision"],
+                    "properties": {
+                        "decision": {"type": "string", "enum": ["approve", "reject"]},
+                        "reviewer": {"type": "string"},
+                        "notes": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }
+
+
 def _build_atlas_html() -> str:
     """Return the Temple Atlas interactive graph viewer page."""
     return """<!doctype html>
@@ -1213,6 +1574,10 @@ def create_app(
         base_url = str(request.base_url).rstrip("/")
         return JSONResponse(_build_openapi_schema(base_url))
 
+    async def openapi_actions(request: Request) -> JSONResponse:
+        base_url = str(request.base_url).rstrip("/")
+        return JSONResponse(_build_actions_openapi_schema(base_url))
+
     async def docs(_: Request) -> HTMLResponse:
         return HTMLResponse(
             """<!doctype html>
@@ -1661,6 +2026,7 @@ def create_app(
     routes = [
         Route("/health", health, methods=["GET"]),
         Route("/openapi.json", openapi, methods=["GET"]),
+        Route("/openapi.actions.json", openapi_actions, methods=["GET"]),
         Route("/docs", docs, methods=["GET"]),
         Route("/atlas", atlas, methods=["GET"]),
         Route("/api/v1/memory/store", store_memory, methods=["POST"]),
