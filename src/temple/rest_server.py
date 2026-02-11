@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any
 
@@ -9,7 +10,7 @@ import uvicorn
 from pydantic import BaseModel, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from temple.config import Settings, settings
@@ -92,6 +93,24 @@ class SurveyReviewDecisionRequest(BaseModel):
     notes: str | None = None
 
 
+class IngestSubmitRequest(BaseModel):
+    item_type: str
+    actor_id: str
+    source: str
+    content: str
+    source_id: str | None = None
+    timestamp: str | None = None
+    idempotency_key: str | None = None
+    metadata: dict[str, Any] | None = None
+    scope: str = "global"
+
+
+class IngestReviewDecisionRequest(BaseModel):
+    decision: str
+    reviewer: str | None = None
+    notes: str | None = None
+
+
 def _build_openapi_schema(base_url: str) -> dict[str, Any]:
     """Build a compact OpenAPI schema for REST compatibility endpoints."""
     components = {
@@ -108,6 +127,8 @@ def _build_openapi_schema(base_url: str) -> dict[str, Any]:
         "MigrateGraphSchemaRequest": MigrateGraphSchemaRequest.model_json_schema(),
         "SurveySubmitRequest": SurveySubmitRequest.model_json_schema(),
         "SurveyReviewDecisionRequest": SurveyReviewDecisionRequest.model_json_schema(),
+        "IngestSubmitRequest": IngestSubmitRequest.model_json_schema(),
+        "IngestReviewDecisionRequest": IngestReviewDecisionRequest.model_json_schema(),
     }
 
     def req(name: str) -> dict[str, Any]:
@@ -149,6 +170,10 @@ def _build_openapi_schema(base_url: str) -> dict[str, Any]:
             "/api/v1/surveys/jobs/{job_id}": {"get": {"summary": "Get survey enrichment job status", "responses": {"200": {"description": "Job status"}}}},
             "/api/v1/surveys/reviews": {"get": {"summary": "List inferred relation review queue", "responses": {"200": {"description": "Review candidates"}}}},
             "/api/v1/surveys/reviews/{review_id}": {"post": {"summary": "Approve/reject inferred relation", "requestBody": req("SurveyReviewDecisionRequest"), "responses": {"200": {"description": "Review result"}}}},
+            "/api/v1/ingest/submit": {"post": {"summary": "Submit content for ingest and enrichment", "requestBody": req("IngestSubmitRequest"), "responses": {"200": {"description": "Queued job"}}}},
+            "/api/v1/ingest/jobs/{job_id}": {"get": {"summary": "Get ingest job status", "responses": {"200": {"description": "Job status"}}}},
+            "/api/v1/ingest/reviews": {"get": {"summary": "List inferred relation review queue", "responses": {"200": {"description": "Review candidates"}}}},
+            "/api/v1/ingest/reviews/{review_id}": {"post": {"summary": "Approve/reject inferred relation", "requestBody": req("IngestReviewDecisionRequest"), "responses": {"200": {"description": "Review result"}}}},
             "/api/v1/relationship-map": {"get": {"summary": "Get relationship map around an entity", "responses": {"200": {"description": "Relationship map"}}}},
             "/api/v1/admin/stats": {"get": {"summary": "Get stats", "responses": {"200": {"description": "Stats"}}}},
             "/api/v1/admin/graph/export": {"get": {"summary": "Export graph for visualization", "responses": {"200": {"description": "Graph export"}}}},
@@ -1150,6 +1175,24 @@ def create_app(
             return None
         return unauthorized()
 
+    def require_atlas_auth(request: Request) -> Response | None:
+        if not app_settings.atlas_user or not app_settings.atlas_pass:
+            return None
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                user, password = decoded.split(":", 1)
+                if user == app_settings.atlas_user and password == app_settings.atlas_pass:
+                    return None
+            except Exception:
+                pass
+        return Response(
+            "Unauthorized",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="Atlas"'},
+        )
+
     async def parse_json(request: Request, model: type[BaseModel]) -> BaseModel:
         payload = await request.json()
         return model.model_validate(payload)
@@ -1180,7 +1223,10 @@ def create_app(
 </html>""",
         )
 
-    async def atlas(_: Request) -> HTMLResponse:
+    async def atlas(request: Request) -> HTMLResponse | Response:
+        auth = require_atlas_auth(request)
+        if auth:
+            return auth
         return HTMLResponse(_build_atlas_html())
 
     async def store_memory(request: Request) -> JSONResponse:
@@ -1456,6 +1502,72 @@ def create_app(
         except ValueError as e:
             return error(str(e), status=400)
 
+    async def submit_ingest(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        try:
+            body = await parse_json(request, IngestSubmitRequest)
+            result = app_broker.submit_ingest_item(
+                item_type=body.item_type,
+                actor_id=body.actor_id,
+                source=body.source,
+                content=body.content,
+                source_id=body.source_id,
+                timestamp=body.timestamp,
+                idempotency_key=body.idempotency_key,
+                metadata=body.metadata,
+                scope=body.scope,
+            )
+            return JSONResponse(result)
+        except ValidationError as e:
+            return error(str(e), status=422)
+        except ValueError as e:
+            return error(str(e), status=400)
+
+    async def get_ingest_job(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        job_id = request.path_params["job_id"]
+        record = app_broker.get_ingest_job(job_id)
+        if record is None:
+            return error(f"Ingest job '{job_id}' not found", status=404)
+        return JSONResponse(record)
+
+    async def list_ingest_reviews(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        status = request.query_params.get("status", "pending")
+        limit_raw = request.query_params.get("limit", "100")
+        try:
+            limit = max(1, min(int(limit_raw), 1000))
+        except ValueError:
+            return error("limit must be an integer", status=422)
+        return JSONResponse(app_broker.list_ingest_reviews(status=status, limit=limit))
+
+    async def review_ingest_relation(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        review_id = request.path_params["review_id"]
+        try:
+            body = await parse_json(request, IngestReviewDecisionRequest)
+            result = app_broker.review_ingest_relation(
+                review_id=review_id,
+                decision=body.decision,
+                reviewer=body.reviewer,
+                notes=body.notes,
+            )
+            if result is None:
+                return error(f"Review '{review_id}' not found", status=404)
+            return JSONResponse(result)
+        except ValidationError as e:
+            return error(str(e), status=422)
+        except ValueError as e:
+            return error(str(e), status=400)
+
     async def relationship_map(request: Request) -> JSONResponse:
         auth = require_auth(request)
         if auth:
@@ -1564,6 +1676,10 @@ def create_app(
         Route("/api/v1/surveys/jobs/{job_id}", get_survey_job, methods=["GET"]),
         Route("/api/v1/surveys/reviews", list_survey_reviews, methods=["GET"]),
         Route("/api/v1/surveys/reviews/{review_id}", review_survey_relation, methods=["POST"]),
+        Route("/api/v1/ingest/submit", submit_ingest, methods=["POST"]),
+        Route("/api/v1/ingest/jobs/{job_id}", get_ingest_job, methods=["GET"]),
+        Route("/api/v1/ingest/reviews", list_ingest_reviews, methods=["GET"]),
+        Route("/api/v1/ingest/reviews/{review_id}", review_ingest_relation, methods=["POST"]),
         Route("/api/v1/relationship-map", relationship_map, methods=["GET"]),
         Route("/api/v1/admin/stats", get_stats, methods=["GET"]),
         Route("/api/v1/admin/graph/export", export_graph, methods=["GET"]),

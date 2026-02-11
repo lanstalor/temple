@@ -165,9 +165,14 @@ All graph writes should preserve:
 - Job/review persistence across restart is implemented
 - OAuth discovery compatibility routes are in place for MCP client variability
 
-### 6.2 Current Scope of Enrichment
-- Current enrichment flow is functionally useful but still tuned to a narrow "survey-like" ingest naming and heuristics
-- It already performs async analysis and relation creation/review, but naming and contracts are not yet generalized for enterprise ingest semantics
+### 6.2 Ingest and Enrichment Pipeline
+- Universal ingest API (`/api/v1/ingest/submit`) accepts any content type: email, document, chat, meeting note, ticket, survey, note
+- Generalized data contract: `item_type`, `actor_id`, `source`, `content`, `source_id`, `timestamp`, `idempotency_key`, `metadata`, `scope`
+- LLM-assisted entity/relation extraction when `TEMPLE_LLM_API_KEY` is configured (Claude via Anthropic API)
+- Heuristic fallback (regex + keyword) when no LLM key is set or LLM call fails
+- Confidence policy: auto-create at >=0.80, review queue at >=0.60, discard below 0.60
+- Legacy survey routes (`/api/v1/surveys/*`) remain as backward-compatible wrappers
+- State persisted to `ingest_state.json` with migration from legacy `survey_state.json`
 
 ### 6.3 Current Strengths
 - Strong base architecture for interoperability
@@ -175,29 +180,32 @@ All graph writes should preserve:
 - Practical production learnings already incorporated (auth compatibility, restart durability)
 
 ### 6.4 Current Gaps Versus End State
-- `Naming and API semantics`: ingest is still framed as "survey" in public API names
-- `Ingest breadth`: no first-class connectors yet for email/doc/chat pipelines
-- `Extraction quality`: heuristic extraction needs higher-fidelity NLP/LLM-assisted stages
+- ~~`Naming and API semantics`~~: **DONE** — generalized ingest API with backward-compat survey aliases
+- `Ingest breadth`: no first-class connectors yet for email/doc/chat pipelines (API is ready, connectors are Phase B)
+- ~~`Extraction quality`~~: **DONE** — LLM-assisted extraction via Anthropic API with heuristic fallback
 - `Queue model`: durable state exists, but still file-based and should evolve to stronger structured persistence
 - `Policy controls`: confidence thresholds and write policies need formal configuration by source/type
 - `Operations`: more metrics, alerts, and replay tooling required for enterprise confidence
 
 ## 7) Transition Plan To End State
 
-### Phase A: Reframe and Generalize Interface
-- Rename public ingest contract from "survey" to general "ingest item"
-- Keep backward-compatible aliases for existing routes
-- Standardize metadata contract for all source types
+### Phase A: Reframe and Generalize Interface — **DONE 2026-02-11**
+- Universal ingest API: `POST /api/v1/ingest/submit` with generalized data contract
+- Backward-compatible survey aliases: `/api/v1/surveys/*` routes unchanged
+- Standardized metadata contract for all source types (item_type, actor_id, source, source_id, etc.)
+- State file migrated from `survey_state.json` → `ingest_state.json` with automatic fallback read
 
 ### Phase B: Source Connectors
 - email ingest (initially batch import + incremental sync)
 - document ingest (files/folders)
 - conversation ingest (AI transcripts)
 
-### Phase C: Intelligence Quality
-- stronger entity linking and canonicalization
-- relation-type taxonomy hardening
-- explainability improvements for each inferred edge
+### Phase C: Intelligence Quality — **PARTIALLY DONE 2026-02-11**
+- LLM-powered extraction (`TEMPLE_LLM_API_KEY`): structured entity/relation extraction via Claude with defined taxonomy
+- Heuristic fallback preserved for zero-config deployments
+- Entity type taxonomy: person, organization, technology, project, concept, location
+- Relation type taxonomy: works_with, uses, manages, blocked_by, interested_in, mentors, collaborates_with, etc.
+- TODO: stronger entity linking/canonicalization, cross-document dedup, explainability fields
 
 ### Phase D: Operational Maturity
 - durable queue backend and replay controls

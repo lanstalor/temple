@@ -15,7 +15,7 @@ uv sync --dev
 # Run server locally (defaults to combined MCP+REST mode on :8100)
 uv run python -m temple
 
-# Run tests (66 tests, pytest-asyncio with asyncio_mode=auto)
+# Run tests (89 tests, pytest-asyncio with asyncio_mode=auto)
 uv run pytest tests/ -v
 
 # Run a single test file
@@ -63,9 +63,13 @@ Three scopes with strict ranking: **session > project > global**. On retrieval, 
 
 Dual auth when `TEMPLE_API_KEY` is set: static Bearer token checked first, then OAuth 2.1 tokens via `TempleAuthProvider` (extends FastMCP's `InMemoryOAuthProvider`). `/health` bypasses auth. When `TEMPLE_API_KEY` is empty, auth is disabled.
 
-### Survey enrichment pipeline
+### Ingest and enrichment pipeline
 
-Background thread (`_survey_worker_loop`) processes ingested survey responses: extracts entity candidates via regex, infers relations with confidence scoring, auto-creates high-confidence (≥0.80) relations, queues medium-confidence (≥0.60) for human review. State is persisted to `data/audit/survey_state.json` and resumed on restart.
+Background thread (`_ingest_worker_loop`) processes ingested content of any type (email, document, chat, meeting note, ticket, survey, note). Extraction uses LLM (Anthropic Claude) when `TEMPLE_LLM_API_KEY` is configured, falling back to regex/keyword heuristics. Confidence policy: auto-creates high-confidence (≥0.80) relations, queues medium-confidence (≥0.60) for human review. State is persisted to `data/audit/ingest_state.json` and resumed on restart. Legacy `survey_state.json` is auto-migrated on first load.
+
+**LLM extractor** (`memory/llm_extractor.py`): Separate module following `embedder.py` lazy-load pattern. Provides `extract(text, actor_id, settings)` → `ExtractionResult` with entities, relations, extraction_method, and optional LLM usage/error data. Heuristic helpers (`_extract_entity_candidates`, `_infer_relation_candidates`, `_normalize_entity_name`, `_infer_entity_type`) live here.
+
+**Survey routes** (`/api/v1/surveys/*`): Backward-compatible wrappers that delegate to the generalized ingest methods. New routes at `/api/v1/ingest/*` are the canonical API.
 
 ## Configuration
 

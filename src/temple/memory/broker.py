@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import queue
-import re
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -18,6 +17,12 @@ from temple.memory.context import ContextManager
 from temple.memory.embedder import embed_text
 from temple.memory.graph_store import GraphStore
 from temple.memory.hashing import content_hash
+from temple.memory.llm_extractor import (
+    ExtractionResult,
+    _infer_entity_type,
+    _normalize_entity_name,
+    extract as llm_extract,
+)
 from temple.memory.vector_store import VectorStore
 from temple.models.context import ContextScope
 from temple.models.memory import MemoryEntry, MemorySearchResult
@@ -42,20 +47,20 @@ class MemoryBroker:
         self._audit = AuditLog(settings.audit_dir)
         self._context = ContextManager()
         self._last_session_cleanup: datetime | None = None
-        self._survey_lock = threading.Lock()
-        self._survey_queue: queue.Queue[dict[str, Any]] = queue.Queue()
-        self._survey_jobs: dict[str, dict[str, Any]] = {}
-        self._survey_reviews: dict[str, dict[str, Any]] = {}
-        self._survey_payloads: dict[str, dict[str, Any]] = {}
-        self._survey_state_path = settings.audit_dir / "survey_state.json"
-        self._load_survey_state()
-        self._survey_worker = threading.Thread(
-            target=self._survey_worker_loop,
-            name="temple-survey-worker",
+        self._ingest_lock = threading.Lock()
+        self._ingest_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._ingest_jobs: dict[str, dict[str, Any]] = {}
+        self._ingest_reviews: dict[str, dict[str, Any]] = {}
+        self._ingest_payloads: dict[str, dict[str, Any]] = {}
+        self._ingest_state_path = settings.audit_dir / "ingest_state.json"
+        self._load_ingest_state()
+        self._ingest_worker = threading.Thread(
+            target=self._ingest_worker_loop,
+            name="temple-ingest-worker",
             daemon=True,
         )
-        self._survey_worker.start()
-        self._resume_pending_survey_jobs()
+        self._ingest_worker.start()
+        self._resume_pending_ingest_jobs()
 
     @property
     def context(self) -> ContextManager:
@@ -536,9 +541,9 @@ class MemoryBroker:
         for c in collections:
             memory_counts[c] = self._vector_store.count(c)
 
-        with self._survey_lock:
-            survey_jobs = len(self._survey_jobs)
-            survey_pending_reviews = len([r for r in self._survey_reviews.values() if r["status"] == "pending"])
+        with self._ingest_lock:
+            ingest_jobs = len(self._ingest_jobs)
+            ingest_pending_reviews = len([r for r in self._ingest_reviews.values() if r["status"] == "pending"])
 
         return {
             "collections": collections,
@@ -548,8 +553,12 @@ class MemoryBroker:
             "relation_count": self._graph_store.relation_count(),
             "graph_schema": self._graph_store.schema_version,
             "active_context": self.get_context(),
-            "survey_jobs": survey_jobs,
-            "survey_pending_reviews": survey_pending_reviews,
+            # New canonical keys
+            "ingest_jobs": ingest_jobs,
+            "ingest_pending_reviews": ingest_pending_reviews,
+            # Backward-compat aliases
+            "survey_jobs": ingest_jobs,
+            "survey_pending_reviews": ingest_pending_reviews,
         }
 
     def export_knowledge_graph(
@@ -656,28 +665,33 @@ class MemoryBroker:
             })
         return result
 
-    # ── Survey Enrichment Operations ────────────────────────────────
+    # ── General Ingest Operations ────────────────────────────────────
 
-    def submit_survey_response(
+    def submit_ingest_item(
         self,
-        survey_id: str,
-        respondent_id: str,
-        response: str,
-        source: str = "survey",
-        version: str = "1",
+        item_type: str,
+        actor_id: str,
+        source: str,
+        content: str,
+        source_id: str | None = None,
+        timestamp: str | None = None,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
-        scope: str = "project:survey",
+        scope: str = "global",
     ) -> dict[str, Any]:
-        """Store a survey response and enqueue asynchronous enrichment."""
+        """Store a text payload and enqueue asynchronous enrichment.
+
+        This is the universal ingest entrypoint for any content type
+        (email, document, chat, meeting note, ticket, survey, note).
+        """
         self._maybe_cleanup_expired_sessions()
         normalized_scope = self._context.parse_scope(scope).scope_key
         key = idempotency_key.strip() if idempotency_key else None
-        key_tag = f"survey-idem:{key}" if key else None
+        key_tag = f"ingest-idem:{key}" if key else None
 
         if key_tag:
             existing = self.search_memories(
-                tags=["survey-response", key_tag],
+                tags=["ingest-item", key_tag],
                 scope=normalized_scope,
                 n_results=1,
             )
@@ -685,34 +699,37 @@ class MemoryBroker:
                 memory = existing[0].memory
                 return {
                     "status": "duplicate",
-                    "job_id": memory.metadata.get("survey_job_id"),
+                    "job_id": memory.metadata.get("ingest_job_id"),
                     "memory_id": memory.id,
                     "scope": memory.scope,
                     "queued": False,
                 }
 
         job_id = uuid4().hex
-        now = datetime.now(timezone.utc).isoformat()
+        now = timestamp or datetime.now(timezone.utc).isoformat()
         tags = [
-            "survey-response",
-            f"survey:{survey_id}",
-            f"respondent:{respondent_id}",
+            "ingest-item",
+            f"item_type:{item_type}",
+            f"source:{source}",
+            f"actor:{actor_id}",
         ]
         if key_tag:
             tags.append(key_tag)
+        if source_id:
+            tags.append(f"source_id:{source_id}")
 
         merged_meta = dict(metadata or {})
         merged_meta.update({
-            "survey_id": survey_id,
-            "respondent_id": respondent_id,
+            "item_type": item_type,
+            "actor_id": actor_id,
             "source": source,
-            "version": version,
-            "survey_job_id": job_id,
+            "source_id": source_id or "",
+            "ingest_job_id": job_id,
             "submitted_at": now,
         })
 
         entry = self.store_memory(
-            response,
+            content,
             tags=tags,
             metadata=merged_meta,
             scope=normalized_scope,
@@ -721,43 +738,45 @@ class MemoryBroker:
         job_state = {
             "job_id": job_id,
             "status": "queued",
-            "survey_id": survey_id,
-            "respondent_id": respondent_id,
+            "item_type": item_type,
+            "actor_id": actor_id,
             "source": source,
-            "version": version,
+            "source_id": source_id or "",
             "scope": normalized_scope,
             "memory_id": entry.id,
             "submitted_at": now,
             "started_at": None,
             "finished_at": None,
+            "extraction_method": None,
             "relations_created": 0,
             "reviews_created": 0,
             "entities_touched": 0,
             "errors": [],
         }
-        with self._survey_lock:
-            self._survey_jobs[job_id] = job_state
-            self._survey_payloads[job_id] = {
+        with self._ingest_lock:
+            self._ingest_jobs[job_id] = job_state
+            self._ingest_payloads[job_id] = {
                 "job_id": job_id,
-                "survey_id": survey_id,
-                "respondent_id": respondent_id,
+                "item_type": item_type,
+                "actor_id": actor_id,
                 "source": source,
-                "version": version,
+                "source_id": source_id or "",
                 "scope": normalized_scope,
                 "memory_id": entry.id,
-                "response": response,
+                "content": content,
             }
-        self._persist_survey_state()
+        self._persist_ingest_state()
 
-        self._audit.log("survey_submit", normalized_scope, {
+        self._audit.log("ingest_submit", normalized_scope, {
             "job_id": job_id,
-            "survey_id": survey_id,
-            "respondent_id": respondent_id,
+            "item_type": item_type,
+            "actor_id": actor_id,
+            "source": source,
             "memory_id": entry.id,
             "idempotency_key_present": bool(key_tag),
         })
 
-        self._survey_queue.put(self._survey_payloads[job_id])
+        self._ingest_queue.put(self._ingest_payloads[job_id])
         return {
             "status": "queued",
             "job_id": job_id,
@@ -766,26 +785,26 @@ class MemoryBroker:
             "queued": True,
         }
 
-    def get_survey_job(self, job_id: str) -> dict[str, Any] | None:
-        """Return current survey job status."""
-        with self._survey_lock:
-            job = self._survey_jobs.get(job_id)
+    def get_ingest_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return current ingest job status."""
+        with self._ingest_lock:
+            job = self._ingest_jobs.get(job_id)
             if not job:
                 return None
             return dict(job)
 
-    def list_survey_reviews(self, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
+    def list_ingest_reviews(self, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
         """List relation candidates awaiting review (or all statuses)."""
         target = status.strip().lower()
-        with self._survey_lock:
-            reviews = list(self._survey_reviews.values())
+        with self._ingest_lock:
+            reviews = list(self._ingest_reviews.values())
 
         if target != "all":
             reviews = [r for r in reviews if r.get("status") == target]
         reviews.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         return reviews[:max(1, min(limit, 1000))]
 
-    def review_survey_relation(
+    def review_ingest_relation(
         self,
         review_id: str,
         decision: str,
@@ -797,8 +816,8 @@ class MemoryBroker:
         if normalized not in {"approve", "reject"}:
             raise ValueError("decision must be one of: approve, reject")
 
-        with self._survey_lock:
-            record = self._survey_reviews.get(review_id)
+        with self._ingest_lock:
+            record = self._ingest_reviews.get(review_id)
             if not record:
                 return None
             if record["status"] != "pending":
@@ -817,23 +836,80 @@ class MemoryBroker:
             )
 
         now = datetime.now(timezone.utc).isoformat()
-        with self._survey_lock:
-            record = self._survey_reviews[review_id]
+        with self._ingest_lock:
+            record = self._ingest_reviews[review_id]
             record["status"] = "approved" if normalized == "approve" else "rejected"
             record["reviewed_at"] = now
             record["reviewer"] = reviewer or ""
             record["notes"] = notes or ""
             record["applied"] = applied
             updated = dict(record)
-        self._persist_survey_state()
+        self._persist_ingest_state()
 
-        self._audit.log("survey_review", updated["candidate"]["scope"], {
+        self._audit.log("ingest_review", updated["candidate"]["scope"], {
             "review_id": review_id,
             "decision": normalized,
             "applied": applied,
             "reviewer": reviewer or "",
         })
         return updated
+
+    # ── Survey Enrichment Operations (backward-compat wrappers) ──────
+
+    def submit_survey_response(
+        self,
+        survey_id: str,
+        respondent_id: str,
+        response: str,
+        source: str = "survey",
+        version: str = "1",
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: str = "project:survey",
+    ) -> dict[str, Any]:
+        """Store a survey response and enqueue asynchronous enrichment.
+
+        Thin wrapper around submit_ingest_item() for backward compatibility.
+        """
+        merged_meta = dict(metadata or {})
+        merged_meta.update({
+            "survey_id": survey_id,
+            "respondent_id": respondent_id,
+            "version": version,
+        })
+        return self.submit_ingest_item(
+            item_type="survey",
+            actor_id=respondent_id,
+            source=source,
+            content=response,
+            source_id=survey_id,
+            idempotency_key=idempotency_key,
+            metadata=merged_meta,
+            scope=scope,
+        )
+
+    def get_survey_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return current survey job status (delegates to get_ingest_job)."""
+        return self.get_ingest_job(job_id)
+
+    def list_survey_reviews(self, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
+        """List relation candidates awaiting review (delegates to list_ingest_reviews)."""
+        return self.list_ingest_reviews(status=status, limit=limit)
+
+    def review_survey_relation(
+        self,
+        review_id: str,
+        decision: str,
+        reviewer: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Approve or reject a queued inferred relation (delegates to review_ingest_relation)."""
+        return self.review_ingest_relation(
+            review_id=review_id,
+            decision=decision,
+            reviewer=reviewer,
+            notes=notes,
+        )
 
     def get_relationship_map(
         self,
@@ -902,92 +978,91 @@ class MemoryBroker:
 
     # ── Private Helpers ──────────────────────────────────────────────
 
-    def _survey_worker_loop(self) -> None:
-        """Background worker for survey enrichment jobs."""
+    def _ingest_worker_loop(self) -> None:
+        """Background worker for ingest enrichment jobs."""
         while True:
-            payload = self._survey_queue.get()
+            payload = self._ingest_queue.get()
             job_id = payload.get("job_id", "")
             now = datetime.now(timezone.utc).isoformat()
-            with self._survey_lock:
-                if job_id in self._survey_jobs:
-                    self._survey_jobs[job_id]["status"] = "processing"
-                    self._survey_jobs[job_id]["started_at"] = now
-            self._persist_survey_state()
+            with self._ingest_lock:
+                if job_id in self._ingest_jobs:
+                    self._ingest_jobs[job_id]["status"] = "processing"
+                    self._ingest_jobs[job_id]["started_at"] = now
+            self._persist_ingest_state()
 
             try:
-                result = self._process_survey_payload(payload)
+                result = self._process_ingest_payload(payload)
                 finished = datetime.now(timezone.utc).isoformat()
-                with self._survey_lock:
-                    if job_id in self._survey_jobs:
-                        self._survey_jobs[job_id]["status"] = "completed"
-                        self._survey_jobs[job_id]["finished_at"] = finished
-                        self._survey_jobs[job_id]["relations_created"] = result["relations_created"]
-                        self._survey_jobs[job_id]["reviews_created"] = result["reviews_created"]
-                        self._survey_jobs[job_id]["entities_touched"] = result["entities_touched"]
-                        self._survey_payloads.pop(job_id, None)
-                self._persist_survey_state()
+                with self._ingest_lock:
+                    if job_id in self._ingest_jobs:
+                        self._ingest_jobs[job_id]["status"] = "completed"
+                        self._ingest_jobs[job_id]["finished_at"] = finished
+                        self._ingest_jobs[job_id]["extraction_method"] = result.get("extraction_method")
+                        self._ingest_jobs[job_id]["relations_created"] = result["relations_created"]
+                        self._ingest_jobs[job_id]["reviews_created"] = result["reviews_created"]
+                        self._ingest_jobs[job_id]["entities_touched"] = result["entities_touched"]
+                        self._ingest_payloads.pop(job_id, None)
+                self._persist_ingest_state()
             except Exception as e:
-                logger.exception("Survey enrichment failed for job %s", job_id)
+                logger.exception("Ingest enrichment failed for job %s", job_id)
                 failed = datetime.now(timezone.utc).isoformat()
-                with self._survey_lock:
-                    if job_id in self._survey_jobs:
-                        self._survey_jobs[job_id]["status"] = "failed"
-                        self._survey_jobs[job_id]["finished_at"] = failed
-                        self._survey_jobs[job_id]["errors"].append(str(e))
-                        self._survey_payloads.pop(job_id, None)
-                self._persist_survey_state()
+                with self._ingest_lock:
+                    if job_id in self._ingest_jobs:
+                        self._ingest_jobs[job_id]["status"] = "failed"
+                        self._ingest_jobs[job_id]["finished_at"] = failed
+                        self._ingest_jobs[job_id]["errors"].append(str(e))
+                        self._ingest_payloads.pop(job_id, None)
+                self._persist_ingest_state()
             finally:
-                self._survey_queue.task_done()
+                self._ingest_queue.task_done()
 
-    def _process_survey_payload(self, payload: dict[str, Any]) -> dict[str, int]:
-        """Extract entities/relations from a survey response and apply confidence policy."""
+    def _process_ingest_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Extract entities/relations from an ingest payload and apply confidence policy."""
         scope = payload["scope"]
-        response = payload["response"]
-        respondent = self._normalize_entity_name(payload["respondent_id"])
-        source = payload.get("source", "survey")
-        survey_id = payload.get("survey_id", "")
+        content = payload["content"]
+        actor_id = payload.get("actor_id", "")
+        source = payload.get("source", "unknown")
         job_id = payload.get("job_id", "")
         memory_id = payload.get("memory_id", "")
 
-        entities = self._extract_entity_candidates(response)
-        if respondent not in entities:
-            entities.insert(0, respondent)
+        extraction: ExtractionResult = llm_extract(content, actor_id, self._settings)
 
         touched = 0
-        for entity in entities:
-            entity_type = self._infer_entity_type(entity)
-            created = self._graph_store.create_entity(entity, entity_type, scope=scope)
+        for entity in extraction.entities:
+            entity_type = entity.get("type", "concept")
+            created = self._graph_store.create_entity(entity["name"], entity_type, scope=scope)
             if created:
                 touched += 1
-                self._audit.log("create_entity", scope, {"name": entity, "source": "survey-enrichment"})
+                self._audit.log("create_entity", scope, {
+                    "name": entity["name"],
+                    "source": f"ingest-enrichment-{extraction.extraction_method}",
+                })
 
-        relation_candidates = self._infer_relation_candidates(
-            text=response,
-            respondent=respondent,
-            entities=entities,
-        )
-
-        similar = self.retrieve_memory(response, n_results=3, scope=scope)
+        similar = self.retrieve_memory(content, n_results=3, scope=scope)
         signal_boost = 0.05 if any(
             r.memory.id != memory_id and r.score >= 0.88 for r in similar
         ) else 0.0
 
         created_relations = 0
         review_relations = 0
-        for candidate in relation_candidates:
-            confidence = min(0.99, candidate["confidence"] + signal_boost)
+        for rel in extraction.relations:
+            confidence = min(0.99, rel["confidence"] + signal_boost)
             provenance = {
-                "survey_id": survey_id,
                 "job_id": job_id,
                 "memory_id": memory_id,
                 "source": source,
+                "extraction_method": extraction.extraction_method,
                 "signal_boost": round(signal_boost, 3),
             }
+            if extraction.llm_usage:
+                provenance["llm_usage"] = extraction.llm_usage
+
+            relation_type = rel["type"]
             if confidence >= 0.80:
                 created = self._create_relation_in_scope(
-                    source=candidate["source"],
-                    target=candidate["target"],
-                    relation_type=candidate["relation_type"],
+                    source=rel["source"],
+                    target=rel["target"],
+                    relation_type=relation_type,
                     scope=scope,
                     confidence=confidence,
                     provenance=provenance,
@@ -997,34 +1072,37 @@ class MemoryBroker:
             elif confidence >= 0.60:
                 self._enqueue_review_candidate(
                     candidate={
-                        "source": candidate["source"],
-                        "target": candidate["target"],
-                        "relation_type": candidate["relation_type"],
+                        "source": rel["source"],
+                        "target": rel["target"],
+                        "relation_type": relation_type,
                         "scope": scope,
                         "confidence": round(confidence, 3),
                         "provenance": provenance,
                     },
-                    survey_job_id=job_id,
+                    ingest_job_id=job_id,
                     memory_id=memory_id,
                 )
                 review_relations += 1
 
-        self._audit.log("survey_enriched", scope, {
+        self._audit.log("ingest_enriched", scope, {
             "job_id": job_id,
+            "extraction_method": extraction.extraction_method,
             "entities_touched": touched,
             "relations_created": created_relations,
             "reviews_created": review_relations,
+            "llm_error": extraction.llm_error,
         })
         return {
             "entities_touched": touched,
             "relations_created": created_relations,
             "reviews_created": review_relations,
+            "extraction_method": extraction.extraction_method,
         }
 
     def _enqueue_review_candidate(
         self,
         candidate: dict[str, Any],
-        survey_job_id: str,
+        ingest_job_id: str,
         memory_id: str,
     ) -> None:
         """Queue a medium-confidence inferred relation for human review."""
@@ -1038,14 +1116,16 @@ class MemoryBroker:
             "reviewer": "",
             "notes": "",
             "applied": False,
-            "survey_job_id": survey_job_id,
+            "ingest_job_id": ingest_job_id,
+            # Keep backward-compat key
+            "survey_job_id": ingest_job_id,
             "memory_id": memory_id,
             "candidate": candidate,
         }
-        with self._survey_lock:
-            self._survey_reviews[review_id] = record
-        self._persist_survey_state()
-        self._audit.log("survey_review_queued", candidate["scope"], {
+        with self._ingest_lock:
+            self._ingest_reviews[review_id] = record
+        self._persist_ingest_state()
+        self._audit.log("ingest_review_queued", candidate["scope"], {
             "review_id": review_id,
             "source": candidate["source"],
             "target": candidate["target"],
@@ -1068,10 +1148,10 @@ class MemoryBroker:
 
         source_exists = self._graph_store.get_entity(source, scope=scope)
         if not source_exists:
-            self._graph_store.create_entity(source, self._infer_entity_type(source), scope=scope)
+            self._graph_store.create_entity(source, _infer_entity_type(source), scope=scope)
         target_exists = self._graph_store.get_entity(target, scope=scope)
         if not target_exists:
-            self._graph_store.create_entity(target, self._infer_entity_type(target), scope=scope)
+            self._graph_store.create_entity(target, _infer_entity_type(target), scope=scope)
 
         created = self._graph_store.create_relation(
             source=source,
@@ -1089,127 +1169,67 @@ class MemoryBroker:
             })
         return created
 
-    def _extract_entity_candidates(self, text: str) -> list[str]:
-        """Extract likely entity names from survey text."""
-        proper = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b", text)
-        acronyms = re.findall(r"\b[A-Z]{2,}(?:[0-9]+)?\b", text)
-        blocked = {
-            "I", "We", "The", "This", "That", "And", "But", "For", "With",
-            "You", "Your", "Our", "It", "MCP", "REST", "API",
-        }
-
-        candidates: list[str] = []
-        seen: set[str] = set()
-        for raw in proper + acronyms:
-            name = self._normalize_entity_name(raw)
-            if not name or name in blocked:
-                continue
-            if name in seen:
-                continue
-            seen.add(name)
-            candidates.append(name)
-        return candidates[:25]
-
-    def _infer_relation_candidates(
-        self,
-        text: str,
-        respondent: str,
-        entities: list[str],
-    ) -> list[dict[str, Any]]:
-        """Infer candidate relations from survey text using lightweight heuristics."""
-        lower = text.lower()
-        relation_type = "related_to"
-        confidence = 0.62
-        if any(k in lower for k in ["work with", "works with", "collaborat", "partner"]):
-            relation_type, confidence = "collaborates_with", 0.86
-        elif any(k in lower for k in ["mentor", "coaching"]):
-            relation_type, confidence = "mentors", 0.84
-        elif any(k in lower for k in ["blocked by", "blocker", "obstacle", "dependency"]):
-            relation_type, confidence = "blocked_by", 0.81
-        elif any(k in lower for k in ["use ", "using ", "tool", "platform"]):
-            relation_type, confidence = "uses", 0.82
-        elif any(k in lower for k in ["interested in", "want to learn", "goal"]):
-            relation_type, confidence = "interested_in", 0.78
-
-        candidates: list[dict[str, Any]] = []
-        for entity in entities:
-            if entity == respondent:
-                continue
-            candidates.append({
-                "source": respondent,
-                "target": entity,
-                "relation_type": relation_type,
-                "confidence": confidence,
-            })
-        return candidates[:50]
-
-    def _normalize_entity_name(self, value: str) -> str:
-        """Normalize an entity string for graph writes."""
-        compact = " ".join(value.strip().split())
-        if not compact:
-            return compact
-        if compact.isupper():
-            return compact
-        return " ".join(part.capitalize() for part in compact.split(" "))
-
-    def _infer_entity_type(self, name: str) -> str:
-        """Infer a coarse entity type from token shape."""
-        if " " in name and name[0].isupper():
-            return "person"
-        if name.isupper():
-            return "technology"
-        return "concept"
-
-    def _survey_state_snapshot(self) -> dict[str, Any]:
-        """Build a serializable snapshot of survey job/review state."""
-        with self._survey_lock:
-            jobs = {k: dict(v) for k, v in self._survey_jobs.items()}
-            reviews = {k: dict(v) for k, v in self._survey_reviews.items()}
-            payloads = {k: dict(v) for k, v in self._survey_payloads.items()}
+    def _ingest_state_snapshot(self) -> dict[str, Any]:
+        """Build a serializable snapshot of ingest job/review state."""
+        with self._ingest_lock:
+            jobs = {k: dict(v) for k, v in self._ingest_jobs.items()}
+            reviews = {k: dict(v) for k, v in self._ingest_reviews.items()}
+            payloads = {k: dict(v) for k, v in self._ingest_payloads.items()}
         return {
-            "version": 1,
+            "version": 2,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "jobs": jobs,
             "reviews": reviews,
             "payloads": payloads,
         }
 
-    def _persist_survey_state(self) -> None:
-        """Persist survey job/review state to disk for restart durability."""
-        snapshot = self._survey_state_snapshot()
+    def _persist_ingest_state(self) -> None:
+        """Persist ingest job/review state to disk for restart durability."""
+        snapshot = self._ingest_state_snapshot()
         try:
-            self._survey_state_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = self._survey_state_path.with_suffix(".tmp")
+            self._ingest_state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._ingest_state_path.with_suffix(".tmp")
             tmp_path.write_text(json.dumps(snapshot, ensure_ascii=True))
-            tmp_path.replace(self._survey_state_path)
+            tmp_path.replace(self._ingest_state_path)
         except Exception as e:
-            logger.warning("Failed to persist survey state: %s", e)
+            logger.warning("Failed to persist ingest state: %s", e)
 
-    def _load_survey_state(self) -> None:
-        """Load persisted survey job/review state from disk."""
-        if not self._survey_state_path.exists():
-            return
+    def _load_ingest_state(self) -> None:
+        """Load persisted ingest job/review state from disk.
+
+        Falls back to reading legacy survey_state.json for migration.
+        """
+        state_path = self._ingest_state_path
+        if not state_path.exists():
+            # Try legacy filename for migration
+            legacy_path = self._ingest_state_path.parent / "survey_state.json"
+            if legacy_path.exists():
+                state_path = legacy_path
+                logger.info("Migrating state from survey_state.json → ingest_state.json")
+            else:
+                return
+
         try:
-            payload = json.loads(self._survey_state_path.read_text())
+            payload = json.loads(state_path.read_text())
         except Exception as e:
-            logger.warning("Failed to read survey state file %s: %s", self._survey_state_path, e)
+            logger.warning("Failed to read ingest state file %s: %s", state_path, e)
             return
 
         jobs_raw = payload.get("jobs", {})
         reviews_raw = payload.get("reviews", {})
         payloads_raw = payload.get("payloads", {})
         if not isinstance(jobs_raw, dict) or not isinstance(reviews_raw, dict) or not isinstance(payloads_raw, dict):
-            logger.warning("Survey state file has invalid shape; ignoring")
+            logger.warning("Ingest state file has invalid shape; ignoring")
             return
 
-        with self._survey_lock:
-            self._survey_jobs = {k: dict(v) for k, v in jobs_raw.items() if isinstance(v, dict)}
-            self._survey_reviews = {k: dict(v) for k, v in reviews_raw.items() if isinstance(v, dict)}
-            self._survey_payloads = {k: dict(v) for k, v in payloads_raw.items() if isinstance(v, dict)}
+        with self._ingest_lock:
+            self._ingest_jobs = {k: dict(v) for k, v in jobs_raw.items() if isinstance(v, dict)}
+            self._ingest_reviews = {k: dict(v) for k, v in reviews_raw.items() if isinstance(v, dict)}
+            self._ingest_payloads = {k: dict(v) for k, v in payloads_raw.items() if isinstance(v, dict)}
 
-            for job_id, job in self._survey_jobs.items():
+            for job_id, job in self._ingest_jobs.items():
                 status = str(job.get("status", "queued"))
-                if status in {"queued", "processing"} and job_id not in self._survey_payloads:
+                if status in {"queued", "processing"} and job_id not in self._ingest_payloads:
                     job["status"] = "failed"
                     job.setdefault("errors", [])
                     job["errors"].append("missing persisted payload for queued/processing job")
@@ -1219,23 +1239,36 @@ class MemoryBroker:
                     job["status"] = "queued"
                     job["started_at"] = None
 
-    def _resume_pending_survey_jobs(self) -> None:
-        """Re-enqueue queued survey jobs loaded from persisted state."""
+                # Ensure new fields exist on migrated jobs
+                job.setdefault("item_type", job.get("survey_id", "survey") and "survey")
+                job.setdefault("actor_id", job.get("respondent_id", ""))
+                job.setdefault("extraction_method", None)
+
+            # Ensure review records have new key alongside legacy
+            for review in self._ingest_reviews.values():
+                review.setdefault("ingest_job_id", review.get("survey_job_id", ""))
+
+    def _resume_pending_ingest_jobs(self) -> None:
+        """Re-enqueue queued ingest jobs loaded from persisted state."""
         to_resume: list[dict[str, Any]] = []
-        with self._survey_lock:
-            for job_id, job in self._survey_jobs.items():
+        with self._ingest_lock:
+            for job_id, job in self._ingest_jobs.items():
                 if job.get("status") != "queued":
                     continue
-                payload = self._survey_payloads.get(job_id)
+                payload = self._ingest_payloads.get(job_id)
                 if not payload:
                     continue
+                # Ensure payload has generalized keys
+                payload.setdefault("content", payload.get("response", ""))
+                payload.setdefault("actor_id", payload.get("respondent_id", ""))
+                payload.setdefault("item_type", "survey")
                 to_resume.append(dict(payload))
 
         for payload in to_resume:
-            self._survey_queue.put(payload)
+            self._ingest_queue.put(payload)
         if to_resume:
-            logger.info("Resumed %d survey jobs from persisted state", len(to_resume))
-            self._persist_survey_state()
+            logger.info("Resumed %d ingest jobs from persisted state", len(to_resume))
+            self._persist_ingest_state()
 
     def _check_duplicate(self, collection: str, c_hash: str) -> MemoryEntry | None:
         """Check if a memory with this hash already exists."""

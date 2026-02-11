@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     kuzu_dir: Path = Path("./data/kuzu")
     audit_dir: Path = Path("./data/audit")
 
+    # LLM-assisted extraction (empty key = heuristics only)
+    llm_api_key: str = ""
+    llm_model: str = "claude-sonnet-4-20250514"
+    llm_max_tokens: int = 2048
+    llm_temperature: float = 0.0
+
+    # Atlas UI authentication (empty = no auth)
+    atlas_user: str = ""
+    atlas_pass: str = ""
+
     # Session TTL (seconds)
     session_ttl: int = 86400
 

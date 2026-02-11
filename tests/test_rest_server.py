@@ -1,5 +1,6 @@
 """Tests for REST compatibility server."""
 
+import base64
 from typing import Any
 
 import httpx
@@ -150,6 +151,45 @@ class _FakeBroker:
         record["notes"] = notes or ""
         return record
 
+    def submit_ingest_item(
+        self,
+        item_type: str,
+        actor_id: str,
+        source: str,
+        content: str,
+        source_id: str | None = None,
+        timestamp: str | None = None,
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: str = "global",
+    ) -> dict[str, Any]:
+        job_id = f"ingest-job-{len(self._survey_jobs) + 1}"
+        self._survey_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "item_type": item_type,
+            "actor_id": actor_id,
+            "source": source,
+            "scope": scope,
+            "memory_id": f"memory-{job_id}",
+        }
+        return {"status": "queued", "job_id": job_id, "memory_id": f"memory-{job_id}", "scope": scope, "queued": True}
+
+    def get_ingest_job(self, job_id: str) -> dict[str, Any] | None:
+        return self._survey_jobs.get(job_id)
+
+    def list_ingest_reviews(self, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
+        return self.list_survey_reviews(status=status, limit=limit)
+
+    def review_ingest_relation(
+        self,
+        review_id: str,
+        decision: str,
+        reviewer: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        return self.review_survey_relation(review_id=review_id, decision=decision, reviewer=reviewer, notes=notes)
+
     def get_relationship_map(
         self,
         entity: str,
@@ -250,9 +290,11 @@ class _FakeBroker:
         return True
 
 
-def _make_app(tmp_data_dir, api_key: str = ""):
+def _make_app(tmp_data_dir, api_key: str = "", atlas_user: str = "", atlas_pass: str = ""):
     settings = Settings(
         api_key=api_key,
+        atlas_user=atlas_user,
+        atlas_pass=atlas_pass,
     )
     broker = _FakeBroker()
     return create_app(broker=broker, config=settings)
@@ -410,3 +452,90 @@ async def test_rest_survey_and_relationship_endpoints(tmp_data_dir):
         )
         assert relation_map.status_code == 200
         assert relation_map.json()["entity"] == "Lance"
+
+
+@pytest.mark.asyncio
+async def test_rest_ingest_endpoints(tmp_data_dir):
+    """Ingest submit/job/review routes are available and wired."""
+    app = _make_app(tmp_data_dir)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        queued = await client.post(
+            "/api/v1/ingest/submit",
+            json={
+                "item_type": "email",
+                "actor_id": "lance",
+                "source": "outlook",
+                "content": "Meeting notes from project kickoff with Alice and Bob.",
+                "scope": "project:kickoff",
+            },
+        )
+        assert queued.status_code == 200
+        job = queued.json()
+        assert job["status"] == "queued"
+        assert job["job_id"]
+
+        job_status = await client.get(f"/api/v1/ingest/jobs/{job['job_id']}")
+        assert job_status.status_code == 200
+        assert job_status.json()["job_id"] == job["job_id"]
+
+        reviews = await client.get("/api/v1/ingest/reviews")
+        assert reviews.status_code == 200
+        assert isinstance(reviews.json(), list)
+
+        review = await client.post(
+            "/api/v1/ingest/reviews/rev-1",
+            json={"decision": "approve", "reviewer": "tester"},
+        )
+        assert review.status_code == 200
+        assert review.json()["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_rest_openapi_includes_ingest_routes(tmp_data_dir):
+    """OpenAPI schema includes the new ingest routes."""
+    app = _make_app(tmp_data_dir)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        openapi = await client.get("/openapi.json")
+        assert openapi.status_code == 200
+        paths = openapi.json()["paths"]
+        assert "/api/v1/ingest/submit" in paths
+        assert "/api/v1/ingest/jobs/{job_id}" in paths
+        assert "/api/v1/ingest/reviews" in paths
+        assert "/api/v1/ingest/reviews/{review_id}" in paths
+        schemas = openapi.json()["components"]["schemas"]
+        assert "IngestSubmitRequest" in schemas
+        assert "IngestReviewDecisionRequest" in schemas
+
+
+@pytest.mark.asyncio
+async def test_atlas_basic_auth(tmp_data_dir):
+    """Atlas returns 401 when Basic Auth is configured and creds are missing/wrong."""
+    app = _make_app(tmp_data_dir, atlas_user="admin", atlas_pass="secret")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # No credentials → 401 with WWW-Authenticate header
+        resp = await client.get("/atlas")
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == 'Basic realm="Atlas"'
+
+        # Wrong credentials → 401
+        bad_creds = base64.b64encode(b"admin:wrong").decode()
+        resp = await client.get("/atlas", headers={"Authorization": f"Basic {bad_creds}"})
+        assert resp.status_code == 401
+
+        # Correct credentials → 200
+        good_creds = base64.b64encode(b"admin:secret").decode()
+        resp = await client.get("/atlas", headers={"Authorization": f"Basic {good_creds}"})
+        assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_atlas_no_auth_when_unconfigured(tmp_data_dir):
+    """Atlas is open when atlas_user/atlas_pass are not set."""
+    app = _make_app(tmp_data_dir)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.get("/atlas")
+        assert resp.status_code == 200

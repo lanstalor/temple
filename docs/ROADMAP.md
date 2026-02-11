@@ -37,6 +37,19 @@ This roadmap is prioritized for reliability, interoperability, and safe producti
 - Added `docker/scripts/restore.sh` with safety checks (container-running guard, confirmation prompt, content verification).
 - TODO: periodic recovery test cadence / cron automation.
 
+## Priority 1.5: Ingest and Extraction Generalization — **DONE 2026-02-11**
+
+1. ~~Generalized ingest API~~ **DONE**
+- Universal `POST /api/v1/ingest/submit` accepting any content type (email, document, chat, meeting note, ticket, survey, note).
+- Backward-compatible: legacy `/api/v1/surveys/*` routes remain as wrappers.
+- State file migration: `survey_state.json` → `ingest_state.json` with automatic fallback.
+
+2. ~~LLM-assisted extraction~~ **DONE**
+- Claude-powered entity/relation extraction via Anthropic API when `TEMPLE_LLM_API_KEY` is configured.
+- Structured taxonomy: 6 entity types, 13+ relation types.
+- Heuristic fallback when no LLM key is set or API call fails.
+- Extraction method tracked per job for observability.
+
 ## Priority 2: Ecosystem Expansion
 
 1. First-party REST SDK adapters
