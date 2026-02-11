@@ -46,12 +46,16 @@ class MemoryBroker:
         self._survey_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._survey_jobs: dict[str, dict[str, Any]] = {}
         self._survey_reviews: dict[str, dict[str, Any]] = {}
+        self._survey_payloads: dict[str, dict[str, Any]] = {}
+        self._survey_state_path = settings.audit_dir / "survey_state.json"
+        self._load_survey_state()
         self._survey_worker = threading.Thread(
             target=self._survey_worker_loop,
             name="temple-survey-worker",
             daemon=True,
         )
         self._survey_worker.start()
+        self._resume_pending_survey_jobs()
 
     @property
     def context(self) -> ContextManager:
@@ -733,6 +737,17 @@ class MemoryBroker:
         }
         with self._survey_lock:
             self._survey_jobs[job_id] = job_state
+            self._survey_payloads[job_id] = {
+                "job_id": job_id,
+                "survey_id": survey_id,
+                "respondent_id": respondent_id,
+                "source": source,
+                "version": version,
+                "scope": normalized_scope,
+                "memory_id": entry.id,
+                "response": response,
+            }
+        self._persist_survey_state()
 
         self._audit.log("survey_submit", normalized_scope, {
             "job_id": job_id,
@@ -742,16 +757,7 @@ class MemoryBroker:
             "idempotency_key_present": bool(key_tag),
         })
 
-        self._survey_queue.put({
-            "job_id": job_id,
-            "survey_id": survey_id,
-            "respondent_id": respondent_id,
-            "source": source,
-            "version": version,
-            "scope": normalized_scope,
-            "memory_id": entry.id,
-            "response": response,
-        })
+        self._survey_queue.put(self._survey_payloads[job_id])
         return {
             "status": "queued",
             "job_id": job_id,
@@ -819,6 +825,7 @@ class MemoryBroker:
             record["notes"] = notes or ""
             record["applied"] = applied
             updated = dict(record)
+        self._persist_survey_state()
 
         self._audit.log("survey_review", updated["candidate"]["scope"], {
             "review_id": review_id,
@@ -905,6 +912,7 @@ class MemoryBroker:
                 if job_id in self._survey_jobs:
                     self._survey_jobs[job_id]["status"] = "processing"
                     self._survey_jobs[job_id]["started_at"] = now
+            self._persist_survey_state()
 
             try:
                 result = self._process_survey_payload(payload)
@@ -916,6 +924,8 @@ class MemoryBroker:
                         self._survey_jobs[job_id]["relations_created"] = result["relations_created"]
                         self._survey_jobs[job_id]["reviews_created"] = result["reviews_created"]
                         self._survey_jobs[job_id]["entities_touched"] = result["entities_touched"]
+                        self._survey_payloads.pop(job_id, None)
+                self._persist_survey_state()
             except Exception as e:
                 logger.exception("Survey enrichment failed for job %s", job_id)
                 failed = datetime.now(timezone.utc).isoformat()
@@ -924,6 +934,8 @@ class MemoryBroker:
                         self._survey_jobs[job_id]["status"] = "failed"
                         self._survey_jobs[job_id]["finished_at"] = failed
                         self._survey_jobs[job_id]["errors"].append(str(e))
+                        self._survey_payloads.pop(job_id, None)
+                self._persist_survey_state()
             finally:
                 self._survey_queue.task_done()
 
@@ -1032,6 +1044,7 @@ class MemoryBroker:
         }
         with self._survey_lock:
             self._survey_reviews[review_id] = record
+        self._persist_survey_state()
         self._audit.log("survey_review_queued", candidate["scope"], {
             "review_id": review_id,
             "source": candidate["source"],
@@ -1146,6 +1159,83 @@ class MemoryBroker:
         if name.isupper():
             return "technology"
         return "concept"
+
+    def _survey_state_snapshot(self) -> dict[str, Any]:
+        """Build a serializable snapshot of survey job/review state."""
+        with self._survey_lock:
+            jobs = {k: dict(v) for k, v in self._survey_jobs.items()}
+            reviews = {k: dict(v) for k, v in self._survey_reviews.items()}
+            payloads = {k: dict(v) for k, v in self._survey_payloads.items()}
+        return {
+            "version": 1,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "jobs": jobs,
+            "reviews": reviews,
+            "payloads": payloads,
+        }
+
+    def _persist_survey_state(self) -> None:
+        """Persist survey job/review state to disk for restart durability."""
+        snapshot = self._survey_state_snapshot()
+        try:
+            self._survey_state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._survey_state_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(snapshot, ensure_ascii=True))
+            tmp_path.replace(self._survey_state_path)
+        except Exception as e:
+            logger.warning("Failed to persist survey state: %s", e)
+
+    def _load_survey_state(self) -> None:
+        """Load persisted survey job/review state from disk."""
+        if not self._survey_state_path.exists():
+            return
+        try:
+            payload = json.loads(self._survey_state_path.read_text())
+        except Exception as e:
+            logger.warning("Failed to read survey state file %s: %s", self._survey_state_path, e)
+            return
+
+        jobs_raw = payload.get("jobs", {})
+        reviews_raw = payload.get("reviews", {})
+        payloads_raw = payload.get("payloads", {})
+        if not isinstance(jobs_raw, dict) or not isinstance(reviews_raw, dict) or not isinstance(payloads_raw, dict):
+            logger.warning("Survey state file has invalid shape; ignoring")
+            return
+
+        with self._survey_lock:
+            self._survey_jobs = {k: dict(v) for k, v in jobs_raw.items() if isinstance(v, dict)}
+            self._survey_reviews = {k: dict(v) for k, v in reviews_raw.items() if isinstance(v, dict)}
+            self._survey_payloads = {k: dict(v) for k, v in payloads_raw.items() if isinstance(v, dict)}
+
+            for job_id, job in self._survey_jobs.items():
+                status = str(job.get("status", "queued"))
+                if status in {"queued", "processing"} and job_id not in self._survey_payloads:
+                    job["status"] = "failed"
+                    job.setdefault("errors", [])
+                    job["errors"].append("missing persisted payload for queued/processing job")
+                    job["finished_at"] = datetime.now(timezone.utc).isoformat()
+                elif status == "processing":
+                    # Job was in-flight during restart; resume from queued.
+                    job["status"] = "queued"
+                    job["started_at"] = None
+
+    def _resume_pending_survey_jobs(self) -> None:
+        """Re-enqueue queued survey jobs loaded from persisted state."""
+        to_resume: list[dict[str, Any]] = []
+        with self._survey_lock:
+            for job_id, job in self._survey_jobs.items():
+                if job.get("status") != "queued":
+                    continue
+                payload = self._survey_payloads.get(job_id)
+                if not payload:
+                    continue
+                to_resume.append(dict(payload))
+
+        for payload in to_resume:
+            self._survey_queue.put(payload)
+        if to_resume:
+            logger.info("Resumed %d survey jobs from persisted state", len(to_resume))
+            self._persist_survey_state()
 
     def _check_duplicate(self, collection: str, c_hash: str) -> MemoryEntry | None:
         """Check if a memory with this hash already exists."""
