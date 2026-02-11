@@ -86,6 +86,8 @@ class _FakeBroker:
         self,
         scope: str | None = None,
         limit: int = 10000,
+        include_memories: bool = False,
+        memory_limit: int = 5000,
     ) -> dict[str, Any]:
         entities = [
             {"name": "Temple", "entity_type": "project", "observations": ["self-hosted memory"], "scope": "project:temple"},
@@ -102,13 +104,29 @@ class _FakeBroker:
                 "created_at": "",
             }
         ]
-        return {
+        payload = {
             "entities": entities[:limit],
             "relations": relations,
             "entity_count": min(len(entities), limit),
             "relation_count": len(relations),
             "scope": scope or "all",
         }
+        if include_memories:
+            payload["memories"] = [
+                {
+                    "id": "note-1",
+                    "content_hash": "note-1",
+                    "content": "Temple stores durable memory",
+                    "scope": "global",
+                    "tags": ["memory"],
+                    "metadata": {},
+                    "created_at": "",
+                    "updated_at": "",
+                    "collection": "temple_global",
+                }
+            ][:memory_limit]
+            payload["memory_count"] = len(payload["memories"])
+        return payload
 
     def get_graph_schema_status(self) -> dict[str, Any]:
         return {"schema_version": "v2", "legacy_schema_detected": False}
@@ -251,5 +269,16 @@ async def test_rest_export_graph_limit_and_scope_validation(tmp_data_dir):
         assert body["scope"] == "project:temple"
         assert body["entity_count"] == 1
 
+        with_memories = await client.get(
+            "/api/v1/admin/graph/export",
+            params={"include_memories": "1", "memory_limit": "1"},
+        )
+        assert with_memories.status_code == 200
+        memory_body = with_memories.json()
+        assert memory_body["memory_count"] == 1
+
         bad_limit = await client.get("/api/v1/admin/graph/export", params={"limit": "not-a-number"})
         assert bad_limit.status_code == 422
+
+        bad_memory_limit = await client.get("/api/v1/admin/graph/export", params={"memory_limit": "NaN"})
+        assert bad_memory_limit.status_code == 422

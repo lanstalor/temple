@@ -531,6 +531,8 @@ class MemoryBroker:
         self,
         scope: str | None = None,
         limit: int = 10000,
+        include_memories: bool = False,
+        memory_limit: int = 5000,
     ) -> dict[str, Any]:
         """Export entities and outgoing relations for visualization/backup."""
         self._maybe_cleanup_expired_sessions(force=True)
@@ -580,13 +582,18 @@ class MemoryBroker:
                     }
                 )
 
-        return {
+        payload = {
             "entities": entities,
             "relations": all_relations,
             "entity_count": len(entities),
             "relation_count": len(all_relations),
             "scope": normalized_scope or "all",
         }
+        if include_memories:
+            memories = self._export_memories(scope=normalized_scope, limit=memory_limit)
+            payload["memories"] = memories
+            payload["memory_count"] = len(memories)
+        return payload
 
     def health_check(self) -> dict[str, Any]:
         """Check system health."""
@@ -650,6 +657,72 @@ class MemoryBroker:
         except Exception:
             pass
         return None
+
+    def _export_memories(
+        self,
+        scope: str | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Export memory notes from vector collections for visualization."""
+        target_limit = max(1, limit)
+        if scope:
+            collections = [self._context.parse_scope(scope).collection_name]
+        else:
+            collections = sorted(self._vector_store.list_collections())
+
+        memories: list[dict[str, Any]] = []
+        for collection_name in collections:
+            if len(memories) >= target_limit:
+                break
+
+            offset = 0
+            batch_size = 200
+            while len(memories) < target_limit:
+                try:
+                    batch = self._vector_store.get_all(
+                        collection_name=collection_name,
+                        limit=min(batch_size, target_limit - len(memories)),
+                        offset=offset,
+                    )
+                except Exception as e:
+                    logger.debug(f"Memory export read failed for {collection_name}: {e}")
+                    break
+
+                ids = batch.get("ids", [])
+                if not ids:
+                    break
+
+                docs = batch.get("documents", [])
+                metas = batch.get("metadatas", [])
+                for idx, memory_id in enumerate(ids):
+                    if len(memories) >= target_limit:
+                        break
+                    meta = metas[idx] if idx < len(metas) else {}
+                    tags = json.loads(meta.get("tags", "[]")) if meta.get("tags") else []
+                    metadata = json.loads(meta.get("metadata", "{}")) if meta.get("metadata") else {}
+                    memories.append(
+                        {
+                            "id": memory_id,
+                            "content_hash": meta.get("content_hash", memory_id),
+                            "content": docs[idx] if idx < len(docs) else "",
+                            "scope": meta.get("scope", "global"),
+                            "tags": tags,
+                            "metadata": metadata,
+                            "created_at": meta.get("created_at", ""),
+                            "updated_at": meta.get("updated_at", meta.get("created_at", "")),
+                            "collection": collection_name,
+                        }
+                    )
+
+                offset += len(ids)
+                if len(ids) < batch_size:
+                    break
+
+        memories.sort(
+            key=lambda note: note.get("updated_at") or note.get("created_at") or "",
+            reverse=True,
+        )
+        return memories
 
     def _resolve_scopes(self, scope: str | None = None) -> list[ContextScope]:
         """Resolve context scopes for retrieval/search operations."""

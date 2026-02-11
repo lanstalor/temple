@@ -606,31 +606,94 @@ def _build_atlas_html() -> str:
         function buildGraph(payload) {
           const entities = Array.isArray(payload.entities) ? payload.entities : [];
           const relations = Array.isArray(payload.relations) ? payload.relations : [];
+          const memories = Array.isArray(payload.memories) ? payload.memories : [];
 
+          const scopeSet = new Set();
           const nodes = entities.map((entity) => {
-            const id = nodeId(entity.name, entity.scope || "global");
+            const scope = entity.scope || "global";
+            scopeSet.add(scope);
+            const id = nodeId(entity.name, scope);
             return {
               id,
               name: entity.name,
-              scope: entity.scope || "global",
+              scope,
               entity_type: entity.entity_type || "unknown",
+              node_kind: "entity",
               observations: Array.isArray(entity.observations) ? entity.observations : [],
+              content: "",
+              tags: [],
               created_at: entity.created_at || "",
               updated_at: entity.updated_at || "",
               degree: 0,
             };
           });
 
+          memories.forEach((memory) => {
+            const scope = memory.scope || "global";
+            scopeSet.add(scope);
+            const title = (memory.content || "").trim().slice(0, 48);
+            nodes.push({
+              id: `memory::${memory.id}`,
+              name: title ? `note: ${title}` : `note: ${memory.id.slice(0, 12)}`,
+              raw_name: memory.id,
+              scope,
+              entity_type: "memory-note",
+              node_kind: "memory",
+              observations: [],
+              content: memory.content || "",
+              tags: Array.isArray(memory.tags) ? memory.tags : [],
+              created_at: memory.created_at || "",
+              updated_at: memory.updated_at || "",
+              degree: 0,
+            });
+          });
+
           const byId = new Map(nodes.map((n) => [n.id, n]));
           const byName = new Map();
-          nodes.forEach((n) => {
-            const arr = byName.get(n.name) || [];
-            arr.push(n);
-            byName.set(n.name, arr);
+          nodes
+            .filter((n) => n.node_kind === "entity")
+            .forEach((n) => {
+              const arr = byName.get(n.name) || [];
+              arr.push(n);
+              byName.set(n.name, arr);
+            });
+
+          scopeSet.forEach((scope) => {
+            const id = `scope::${scope}`;
+            if (byId.has(id)) return;
+            const scopeLabel = scope === "global" ? "scope: global" : `scope: ${scope}`;
+            const scopeNode = {
+              id,
+              name: scopeLabel,
+              scope,
+              entity_type: "scope",
+              node_kind: "scope",
+              observations: [],
+              content: "",
+              tags: [],
+              created_at: "",
+              updated_at: "",
+              degree: 0,
+            };
+            nodes.push(scopeNode);
+            byId.set(id, scopeNode);
           });
 
           const links = [];
           const seen = new Set();
+          function addLink(sourceId, targetId, relationType, scope) {
+            if (!byId.has(sourceId) || !byId.has(targetId)) return;
+            const key = `${sourceId}|${targetId}|${relationType}|${scope || ""}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            links.push({
+              source: sourceId,
+              target: targetId,
+              relation_type: relationType,
+              scope: scope || "",
+            });
+          }
+
           relations.forEach((rel) => {
             const srcScope = rel.source_scope || rel.scope || "global";
             const tgtScope = rel.target_scope || rel.scope || null;
@@ -650,21 +713,23 @@ def _build_atlas_html() -> str:
                 targetId = match.id;
               }
             }
-
-            if (!byId.has(sourceId) || !targetId || !byId.has(targetId)) {
-              return;
+            if (targetId) {
+              addLink(sourceId, targetId, rel.relation_type || "related_to", rel.scope || "");
             }
+          });
 
-            const key = `${sourceId}|${targetId}|${rel.relation_type}|${rel.scope || ""}`;
-            if (seen.has(key)) return;
-            seen.add(key);
+          memories.forEach((memory) => {
+            const memoryId = `memory::${memory.id}`;
+            const memoryScope = memory.scope || "global";
+            addLink(memoryId, `scope::${memoryScope}`, "in_scope", memoryScope);
 
-            links.push({
-              source: sourceId,
-              target: targetId,
-              relation_type: rel.relation_type || "related_to",
-              scope: rel.scope || "",
-            });
+            const content = (memory.content || "").toLowerCase();
+            if (!content) return;
+            for (const [entityName, candidates] of byName.entries()) {
+              if (!content.includes(entityName.toLowerCase())) continue;
+              const target = candidates.find((c) => c.scope === memoryScope) || candidates[0];
+              addLink(memoryId, target.id, "mentions", memoryScope);
+            }
           });
 
           links.forEach((l) => {
@@ -705,7 +770,7 @@ def _build_atlas_html() -> str:
           const nodes = state.nodes.filter((n) => {
             const scopeOk = scopeValue === "all" ? true : scopeClass(n.scope) === scopeValue;
             const typeOk = typeValue === "all" ? true : n.entity_type === typeValue;
-            const text = `${n.name} ${n.scope} ${n.observations.join(" ")}`.toLowerCase();
+            const text = `${n.name} ${n.scope} ${n.observations.join(" ")} ${n.content || ""} ${(n.tags || []).join(" ")}`.toLowerCase();
             const searchOk = needle ? text.includes(needle) : true;
             return scopeOk && typeOk && searchOk;
           });
@@ -723,8 +788,9 @@ def _build_atlas_html() -> str:
         function renderStats() {
           const nodes = state.filteredNodes;
           const links = state.filteredLinks;
-          const scopes = new Set(nodes.map((n) => n.scope));
-          entityCountEl.textContent = String(nodes.length);
+          const dataNodes = nodes.filter((n) => n.node_kind !== "scope");
+          const scopes = new Set(dataNodes.map((n) => n.scope));
+          entityCountEl.textContent = String(dataNodes.length);
           relationCountEl.textContent = String(links.length);
           scopeCountEl.textContent = String(scopes.size);
         }
@@ -766,6 +832,15 @@ def _build_atlas_html() -> str:
           const obsItems = node.observations.length
             ? `<ul class="list">${node.observations.map((o) => `<li>${o}</li>`).join("")}</ul>`
             : '<p style="margin:0;color:var(--muted)">none</p>';
+          const tagsItems = (node.tags || []).length
+            ? `<ul class="list">${node.tags.map((t) => `<li>${t}</li>`).join("")}</ul>`
+            : '<p style="margin:0;color:var(--muted)">none</p>';
+          const contentBlock = node.content
+            ? `<div class="block"><h4>Note Content</h4><p style="margin:0;line-height:1.5;white-space:pre-wrap">${node.content}</p></div>`
+            : "";
+          const tagsBlock = node.node_kind === "memory"
+            ? `<div class="block"><h4>Tags</h4>${tagsItems}</div>`
+            : "";
 
           nodeDetail.innerHTML = `
             <h3>${node.name}</h3>
@@ -774,6 +849,8 @@ def _build_atlas_html() -> str:
               <span class="pill">${node.scope}</span>
               <span class="pill">degree ${node.degree}</span>
             </div>
+            ${contentBlock}
+            ${tagsBlock}
             <div class="block">
               <h4>Observations</h4>
               ${obsItems}
@@ -838,7 +915,11 @@ def _build_atlas_html() -> str:
           const nodeSel = state.nodeLayer.selectAll("circle")
             .data(nodes, (d) => d.id)
             .join("circle")
-            .attr("r", (d) => 6 + Math.min(d.degree, 8))
+            .attr("r", (d) => {
+              if (d.node_kind === "scope") return 9 + Math.min(d.degree, 6);
+              if (d.node_kind === "memory") return 5 + Math.min(d.degree, 5);
+              return 6 + Math.min(d.degree, 8);
+            })
             .attr("fill", (d) => scopeColor(d.scope))
             .attr("stroke", "var(--ring)")
             .attr("stroke-width", (d) => d.id === state.selectedNodeId ? 2.4 : 1.1)
@@ -869,7 +950,11 @@ def _build_atlas_html() -> str:
           const labels = state.labelLayer.selectAll("text")
             .data(nodes)
             .join("text")
-            .text((d) => d.name)
+            .text((d) => {
+              if (d.node_kind === "scope") return d.name;
+              if (d.node_kind === "memory") return d.name.slice(0, 36);
+              return d.name;
+            })
             .attr("font-size", 11)
             .attr("font-weight", 500)
             .attr("font-family", "IBM Plex Sans, sans-serif")
@@ -905,7 +990,7 @@ def _build_atlas_html() -> str:
             return;
           }
 
-          const url = `${baseUrl}/api/v1/admin/graph/export`;
+          const url = `${baseUrl}/api/v1/admin/graph/export?include_memories=1&memory_limit=5000`;
           const headers = {};
           if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
@@ -927,6 +1012,9 @@ def _build_atlas_html() -> str:
             applyFilters();
             setStatus("loaded", true);
             healthEl.textContent = `Loaded ${state.nodes.length} nodes / ${state.links.length} links`;
+            if (!state.nodes.length) {
+              emptyState.textContent = "No graph or memory notes found for this scope yet.";
+            }
           } catch (err) {
             console.error(err);
             setStatus("load failed");
@@ -1238,12 +1326,26 @@ def create_app(
             return auth
         scope = request.query_params.get("scope")
         limit_raw = request.query_params.get("limit", "10000")
+        include_memories_raw = request.query_params.get("include_memories", "false").strip().lower()
+        include_memories = include_memories_raw in {"1", "true", "yes", "on"}
+        memory_limit_raw = request.query_params.get("memory_limit", "5000")
         try:
             limit = max(1, min(int(limit_raw), 50000))
         except ValueError:
             return error("limit must be an integer", status=422)
         try:
-            return JSONResponse(app_broker.export_knowledge_graph(scope=scope, limit=limit))
+            memory_limit = max(1, min(int(memory_limit_raw), 100000))
+        except ValueError:
+            return error("memory_limit must be an integer", status=422)
+        try:
+            return JSONResponse(
+                app_broker.export_knowledge_graph(
+                    scope=scope,
+                    limit=limit,
+                    include_memories=include_memories,
+                    memory_limit=memory_limit,
+                )
+            )
         except ValueError as e:
             return error(str(e), status=422)
 

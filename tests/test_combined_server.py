@@ -86,6 +86,8 @@ class _FakeBroker:
         self,
         scope: str | None = None,
         limit: int = 10000,
+        include_memories: bool = False,
+        memory_limit: int = 5000,
     ) -> dict[str, Any]:
         entities = [
             {"name": "Temple", "entity_type": "project", "observations": ["memory broker"], "scope": "project:temple"},
@@ -102,13 +104,29 @@ class _FakeBroker:
                 "created_at": "",
             }
         ]
-        return {
+        payload = {
             "entities": entities[:limit],
             "relations": relations,
             "entity_count": min(len(entities), limit),
             "relation_count": len(relations),
             "scope": scope or "all",
         }
+        if include_memories:
+            payload["memories"] = [
+                {
+                    "id": "note-1",
+                    "content_hash": "note-1",
+                    "content": "Temple and Claude are connected",
+                    "scope": "global",
+                    "tags": ["integration"],
+                    "metadata": {},
+                    "created_at": "",
+                    "updated_at": "",
+                    "collection": "temple_global",
+                }
+            ][:memory_limit]
+            payload["memory_count"] = len(payload["memories"])
+        return payload
 
     def get_graph_schema_status(self) -> dict[str, Any]:
         return {"schema_version": "v2", "legacy_schema_detected": False}
@@ -176,6 +194,13 @@ async def test_combined_server_exposes_mcp_and_rest_routes():
         exported = await client.get("/api/v1/admin/graph/export")
         assert exported.status_code == 200
         assert exported.json()["entity_count"] == 2
+
+        exported_with_memories = await client.get(
+            "/api/v1/admin/graph/export",
+            params={"include_memories": "1", "memory_limit": "1"},
+        )
+        assert exported_with_memories.status_code == 200
+        assert exported_with_memories.json()["memory_count"] == 1
 
 
 @pytest.mark.asyncio
