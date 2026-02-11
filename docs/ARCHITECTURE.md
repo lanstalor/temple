@@ -1,277 +1,213 @@
-# Temple: Context-Aware Memory Broker for AI Agents
+# Temple: Concept and Architecture (Target State + Current State)
 
-## Context
+Last updated: `2026-02-11`
 
-The goal is to deploy a self-hosted, CPU-friendly memory broker that provides persistent memory to AI agents via MCP (Model Context Protocol). The system runs embedding generation, vector search, and knowledge graph operations locally, while cloud LLMs connect to it for intelligence. This follows the architecture described in the research artifact on context-aware memory broker systems.
+## 1) Executive Concept
+Temple is a **shared memory and relationship intelligence platform** for AI tools.
 
-**Environment:**
-- **Host (tatooine):** Ubuntu 24.04.3 VM at 192.168.3.233, 1 vCPU (i7-14700K), 11GB RAM, 66GB free disk. Git installed, Tailscale active.
-- **Unraid host:** 192.168.3.99 - available for future migration if more CPU/resources needed.
-- **Strategy:** Develop AND deploy on tatooine. Install Docker here, run everything locally. No SSH-wrapping complexity. Containerized design means migration to Unraid (or anywhere) is a trivial `docker compose up` later.
-- **Git remote:** github.com/lanstalor/temple
+It is not a chatbot. It is the persistent system behind chatbots, copilots, and apps.
 
----
+Temple's role is to:
+- ingest knowledge from many sources (email, documents, chats, notes, tickets, meetings)
+- structure that knowledge into memory + graph relationships
+- expose the same trusted context to many AI ecosystems (`MCP` and `REST`)
+- retain history over months and years
 
-## Architecture
+## 2) End Target State
 
-```
-tatooine (192.168.3.233) — all-in-one dev + deploy
-Tailscale: 100.79.174.122
+### 2.1 Business Outcome
+At end state, Temple acts as a durable **digital work brain**:
+- one memory system across Claude, M365 Copilot, ChatGPT-style clients, and internal workflows
+- one relationship model across people, projects, vendors, tools, risks, and decisions
+- one governance path for confidence, review, provenance, and auditability
 
-┌─────────────────────────────────────────────┐
-│  Docker Compose                             │
-│                                             │
-│  [temple-memory :8100/mcp]                  │
-│    MCP server + ONNX embedder + Kuzu graph  │
-│         │                                   │
-│         └──► [temple-chromadb :8000]         │
-│              vector DB (internal network)    │
-└─────────────────────────────────────────────┘
-         ▲
-         │  Streamable HTTP
-         │
-[Claude Code / Claude Desktop / any MCP client]
-  via LAN (192.168.3.233:8100)
-  via Tailscale (100.79.174.122:8100)
-  via Cloudflare Tunnel (https://temple.tython.ca/mcp)
-```
+### 2.2 End-State Capabilities
+- `Multi-source ingest`: email, docs, chat transcripts, meeting notes, CRM/ticket systems, manual text
+- `Asynchronous enrichment`: background extraction of entities, relations, themes, commitments, and risk signals
+- `Confidence policy`: auto-apply high-confidence links; queue medium-confidence links for review
+- `Explainable retrieval`: every answer can reference source evidence and relationship provenance
+- `Cross-agent interoperability`: same context available through MCP and REST simultaneously
+- `Long-term durability`: no accidental context loss from short-lived session semantics
+- `Operator control`: observability, replay, backup/restore, policy controls, and lifecycle management
 
-**3 key design choices:**
-1. **Embedding inside MCP server** (not separate TEI container) - ONNX-quantized bge-base-en-v1.5, ~20-40ms/embedding on CPU. Simpler, fewer containers, adequate for personal use.
-2. **ChromaDB as separate container** - manages its own HNSW index, WAL, compaction. Independent restarts/upgrades.
-3. **Kuzu embedded in MCP server** (not separate container) - zero network overhead, in-process graph queries.
-4. **Everything on tatooine** - no SSH wrapping, direct Docker access, simpler debugging. Migration to Unraid host is trivial later (just `docker compose up` on new machine).
+### 2.3 End-State Experience
+A Director or Senior Manager can ask any connected assistant:
+- "What are my top unresolved commitments from email in the last 30 days?"
+- "Which projects are at risk and which stakeholders are repeatedly involved?"
+- "What changed this week in vendor relationships and blockers?"
 
----
+And receive consistent answers because all tools query the same underlying memory graph.
 
-## Project Structure
+## 3) End-State Architecture
 
-```
-/home/lans/temple/
-├── pyproject.toml                    # Python project (uv)
-├── .env.example / .env               # Configuration
-├── docs/
-│   └── ARCHITECTURE.md               # This file
-├── docker/
-│   ├── Dockerfile                    # MCP server image
-│   ├── docker-compose.yml            # Production stack
-│   ├── docker-compose.dev.yml        # Dev overrides (port exposure, debug logging)
-│   └── scripts/
-│       └── backup.sh                 # ChromaDB + Kuzu + JSONL backup
-├── src/temple/
-│   ├── server.py                     # FastMCP entry point (Streamable HTTP)
-│   ├── config.py                     # Pydantic settings from env vars
-│   ├── tools/
-│   │   ├── memory_tools.py           # store_memory, retrieve_memory, delete_memory, recall, search
-│   │   ├── entity_tools.py           # create/update/delete/get/search entities
-│   │   ├── relation_tools.py         # create/delete relations, find_path
-│   │   ├── observation_tools.py      # add/remove observations on entities
-│   │   ├── context_tools.py          # set/get context, list projects/sessions
-│   │   └── admin_tools.py            # stats, reindex, export, compact
-│   ├── memory/
-│   │   ├── broker.py                 # Central orchestrator (coordinates all subsystems)
-│   │   ├── embedder.py               # ONNX sentence-transformers (bge-base-en-v1.5)
-│   │   ├── vector_store.py           # ChromaDB client (embedded for dev, HTTP for prod)
-│   │   ├── graph_store.py            # Kuzu embedded graph DB
-│   │   ├── audit_log.py              # JSONL append-only audit trail
-│   │   ├── context.py                # Three-tier context hierarchy logic
-│   │   └── hashing.py                # SHA-256 content dedup
-│   └── models/
-│       ├── entity.py                 # Entity, Observation pydantic models
-│       ├── relation.py               # Relation model
-│       ├── memory.py                 # MemoryEntry, MemorySearchResult
-│       └── context.py                # ContextTier, ContextScope, ActiveContext
-├── tests/                            # pytest suite (unit + integration)
-└── data/                             # Runtime data (gitignored)
-    ├── chromadb/
-    ├── graph/kuzu/
-    └── audit/
-```
+```mermaid
+flowchart LR
+    subgraph Sources[Knowledge Sources]
+      E[Email]
+      D[Documents]
+      C[AI Conversations]
+      M[Meeting Notes]
+      T[Tickets / CRM / PM]
+      X[Manual Notes]
+    end
 
----
+    subgraph Ingest[Ingestion and Enrichment]
+      I[Ingest API]
+      Q[Durable Job Queue]
+      P[Enrichment Pipeline]
+      R[Confidence + Review]
+    end
 
-## Three-Tier Context Hierarchy
+    subgraph Core[Temple Core Knowledge Plane]
+      V[Vector Memory Store]
+      G[Graph Relationship Store]
+      A[Audit + Provenance]
+      Ctx[Context Model\nGlobal/Project/Session]
+    end
 
-| Tier | Loaded when | Precedence | Storage | TTL |
-|------|-------------|------------|---------|-----|
-| **Global** | Always | Lowest | `temple_global` collection | None |
-| **Project** | When project active | Medium | `temple_project_<name>` collection | None |
-| **Session** | When session active | Highest | `temple_session_<id>` collection | 24h default |
+    subgraph Access[Access Layer]
+      MCP[MCP Interface]
+      REST[REST Interface]
+      Atlas[Atlas Visualization]
+    end
 
-Retrieval searches all active tiers, results ranked: session > project > global, then by cosine similarity.
+    subgraph Clients[AI and App Clients]
+      Claude[Claude Ecosystem]
+      Copilot[M365 Copilot Ecosystem]
+      GPT[ChatGPT/SDK Ecosystem]
+      Apps[Internal Apps + Automation]
+    end
 
----
-
-## MCP Tools Summary (26 total)
-
-**Memory** (5 tools): `store_memory`, `retrieve_memory`, `recall_memory`, `search_memories`, `delete_memory`
-**Entities** (5 tools): `create_entities`, `update_entity`, `delete_entities`, `get_entity`, `search_entities`
-**Relations** (4 tools): `create_relations`, `delete_relations`, `get_relations`, `find_path`
-**Observations** (2 tools): `add_observations`, `remove_observations`
-**Context** (4 tools): `set_context`, `get_context`, `list_projects`, `list_sessions`
-**Admin** (6 tools): `get_stats`, `reindex`, `export_knowledge_graph`, `compact_audit_log`, `get_graph_schema_status`, `migrate_graph_schema`
-
----
-
-## Phased Implementation
-
-### Phase 1: Foundation (MVP) ✅
-
-1. Install Docker on tatooine, configure git (user.name/email), init repo, push to github.com/lanstalor/temple
-2. Set up `pyproject.toml` with uv, install all deps
-3. Build configuration system (`config.py` with Pydantic settings, env var overrides)
-4. Build embedder module (ONNX bge-base-en-v1.5, async wrapper)
-5. Build vector store module (ChromaDB, dual-mode: embedded for dev / HTTP for Docker)
-6. Build content hasher (SHA-256 dedup)
-7. Build audit log (JSONL append writer with scoped files)
-8. Build memory broker (orchestrator: store, retrieve, delete - global context only)
-9. Build MCP server with `store_memory`, `retrieve_memory`, `delete_memory` tools
-10. Write unit tests for each module
-11. Build Dockerfile + docker-compose.yml, `docker compose up`, verify end-to-end locally
-
-**Deliverable:** Working MCP server on tatooine - store and retrieve memories via any MCP client.
-
-### Phase 2: Knowledge Graph + Context ✅
-
-1. Build graph store (Kuzu: entity/relation CRUD, path finding, neighborhood queries)
-2. Build context hierarchy (ContextScope, ActiveContext, tier resolution, precedence)
-3. Add entity, relation, observation, and context tools
-4. Update broker for multi-scope retrieval with precedence ordering
-5. Integration tests for graph + vector + context interplay
-6. Update Docker volumes for Kuzu persistence
-
-**Deliverable:** Full knowledge graph with context switching across tiers.
-
-### Phase 3: Production Hardening
-
-1. Add admin tools (stats, reindex, export, compact) ✅
-2. Add `recall_memory` (natural language) and `search_memories` (text/tag) ✅
-3. Memory lifecycle (AUDN cycle: auto-detect add vs update vs delete vs no-op)
-4. Session TTL auto-expiry
-5. Backup script (ChromaDB + Kuzu + JSONL, local + optional offsite)
-6. Health monitoring, structured logging
-
-### Phase 4: Future Enhancements
-
-- Migration to Unraid host for more CPU/resources if needed
-- Web dashboard for memory visualization
-- TEI container migration if throughput needed
-- Hybrid retrieval (BM25 + semantic + graph fusion)
-- Multi-user namespace isolation
-
----
-
-## Docker Compose
-
-Two containers on tatooine:
-
-| Container | Image | Resources | Ports | Volumes |
-|-----------|-------|-----------|-------|---------|
-| `temple-memory` | Custom (Python 3.12-slim) | 3GB RAM, 1 CPU | 8100 (MCP) | data/graph/, data/audit/ |
-| `temple-chromadb` | chromadb/chroma:latest | 1GB RAM, 0.5 CPU | 8000 (internal only) | data/chromadb/ |
-
-All persistent data lives in `/home/lans/temple/data/` (gitignored). For future Unraid migration, just remap volumes to `/mnt/cache/appdata/temple/`.
-
----
-
-## Key Dependencies
-
-```
-fastmcp>=2.0          # MCP server framework (Streamable HTTP)
-chromadb>=0.5         # Vector database
-sentence-transformers>=3.0  # Embedding generation
-onnxruntime>=1.18     # ONNX inference (CPU)
-optimum[onnxruntime]>=1.19  # ONNX model export/loading
-kuzu>=0.7             # Embedded graph database
-pydantic>=2.0         # Data models
-pydantic-settings>=2.0  # Config from env vars
+    Sources --> I --> Q --> P --> R
+    P --> V
+    P --> G
+    P --> A
+    R --> G
+    V --> MCP
+    G --> MCP
+    V --> REST
+    G --> REST
+    A --> REST
+    G --> Atlas
+    MCP --> Clients
+    REST --> Clients
 ```
 
----
+### 3.1 Logical Components
+- `Ingest API`: standard entrypoint for any text/event payload
+- `Durable queue`: decouples ingestion from analysis throughput
+- `Enrichment pipeline`: extraction, matching, scoring, deduping, relation inference
+- `Review layer`: human-in-the-loop for ambiguous inference
+- `Memory store`: semantic retrieval of unstructured knowledge
+- `Graph store`: structured relationship model for traversal and reasoning
+- `Audit/provenance`: immutable event history and source traceability
+- `Access interfaces`: MCP + REST on shared core state
 
-## Key Technical Notes
+### 3.2 Data Contract (Target)
+Every ingest item should carry:
+- `item_type` (email, document, chat, meeting_note, ticket, note)
+- `actor_id` (author/origin identity)
+- `source` and optional `source_id`
+- `timestamp`
+- `content`
+- `idempotency_key`
+- optional `metadata`
 
-- **Kuzu v0.11+**: Database path must NOT pre-exist as a directory. Kuzu creates its own dir. Mount the parent volume instead (e.g., `data/graph:/app/data/graph` with `TEMPLE_KUZU_DIR=/app/data/graph/kuzu`).
-- **Runtime mode switch**: `TEMPLE_RUNTIME_MODE` chooses `combined` (default), `mcp`, or `rest`.
-- **MCP transport switch**: `TEMPLE_MCP_TRANSPORT` supports `streamable-http` (default) or `stdio` (only valid in `mcp` runtime mode).
-- **FastMCP v2.14**: Uses `instructions=` not `description=` in constructor. Transport is configurable at runtime.
-- **ChromaDB chroma:latest**: Data stored at `/data` inside container (not `/chroma/chroma`). Volume mount: `../data/chromadb:/data`.
+This allows reliable replay, dedupe, governance, and cross-system joins.
 
----
+### 3.3 Intelligence Policy (Target)
+- High confidence: auto-create relation
+- Medium confidence: queue review
+- Low confidence: store signal only, no structural mutation
 
-## Connectivity
+All graph writes should preserve:
+- confidence score
+- provenance pointers
+- created/updated timestamps
 
-| Method | URL | Use case |
-|--------|-----|----------|
-| MCP (LAN) | `http://192.168.3.233:8100/mcp` | Claude Code / MCP clients on local network |
-| MCP (Tailscale) | `http://100.79.174.122:8100/mcp` | Remote access via Tailscale |
-| MCP (Cloudflare) | `https://temple.tython.ca/mcp` | Public MCP access (Claude, M365 Copilot, etc.) |
-| REST API | `http://192.168.3.233:8100/api/v1` | ChatGPT Actions, LangChain, LlamaIndex, SK, custom apps |
-| REST Docs | `http://192.168.3.233:8100/docs` | OpenAPI/Swagger UI |
-| Graph Export | `http://192.168.3.233:8100/api/v1/admin/graph/export` | JSON export for graph visualization |
-| Atlas UI | `http://192.168.3.233:8100/atlas` | Interactive entity/relation explorer |
+## 4) End-State Use Cases
 
-**Cloudflare Tunnel:** ID `2bc0c79a-a0a4-46de-a56e-42dca3d60425`, runs as systemd service `cloudflared-temple.service`.
+### 4.1 Inbox Intelligence
+- process full inbox and threads
+- identify commitments, owners, due dates, blockers
+- maintain stakeholder relationship map over time
 
-### Authentication
+### 4.2 Project and Delivery Intelligence
+- combine email + chat + PM signals
+- detect recurring bottlenecks and dependency clusters
+- improve weekly status and escalation readiness
 
-Temple supports **dual authentication** when `TEMPLE_API_KEY` is set. The `/health` endpoint remains unauthenticated (used by Docker healthcheck).
+### 4.3 Leadership Memory Continuity
+- preserve decisions and rationale beyond any one chat session
+- answer "why did we decide this?" with source references
 
-- **Auth disabled** (default): No `TEMPLE_API_KEY` set — open access, suitable for local dev.
-- **Auth enabled**: Set `TEMPLE_API_KEY` to a strong random string. Two auth methods work simultaneously:
+### 4.4 Multi-Agent Consistency
+- Claude/Copilot/ChatGPT-class clients all query same state
+- reduce contradictory outputs between tools
 
-#### 1. Static Bearer Token
-MCP clients send `Authorization: Bearer <key>` with the static API key. Works with Claude Code, Copilot Studio, curl, and any MCP client.
+## 5) Non-Functional End-State Requirements
+- `Durability`: persistent across restarts, upgrades, and host migration
+- `Security`: auth on external interfaces, scoped access controls, key rotation patterns
+- `Observability`: queue depth, processing latency, extraction success rate, review load
+- `Recoverability`: backup/restore drills and replayable ingest
+- `Scalability`: handle batch imports (for example full inbox history)
+- `Governance`: auditability, explainability, and safe approval workflows
 
-**Claude Code client config** (`~/.claude/mcp.json`):
-```json
-{
-  "mcpServers": {
-    "temple": {
-      "type": "streamable-http",
-      "url": "https://temple.tython.ca/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-api-key>"
-      }
-    }
-  }
-}
-```
+## 6) Current State (As Of 2026-02-11)
 
-#### 2. OAuth 2.1 (Authorization Code + PKCE)
-Claude.ai's remote MCP connector requires OAuth 2.1. Temple advertises OAuth metadata at `/.well-known/oauth-protected-resource` and supports:
+### 6.1 What Is Working Now
+- Combined runtime is live: MCP + REST on one service
+- Public endpoint pattern is established (`temple.tython.ca`)
+- Graph + vector + context foundation is operational
+- Atlas graph UI is available and usable
+- Background enrichment pipeline exists
+- Confidence gating + review queue exists
+- Job/review persistence across restart is implemented
+- OAuth discovery compatibility routes are in place for MCP client variability
 
-- **Pre-registered client** — set `TEMPLE_OAUTH_CLIENT_ID`, `TEMPLE_OAUTH_CLIENT_SECRET`, and `TEMPLE_OAUTH_REDIRECT_URIS` (comma-separated) to lock down access (recommended for public endpoints). Dynamic registration is disabled when a client is pre-registered.
-- **Dynamic client registration** — if no client is pre-registered, any client can auto-register (suitable for trusted networks only).
-- **Authorization code flow with PKCE** — auto-approved (single-user server, no consent screen)
-- **Token exchange** — issues in-memory access/refresh tokens (lost on restart; clients re-register automatically)
+### 6.2 Current Scope of Enrichment
+- Current enrichment flow is functionally useful but still tuned to a narrow "survey-like" ingest naming and heuristics
+- It already performs async analysis and relation creation/review, but naming and contracts are not yet generalized for enterprise ingest semantics
 
-Set `TEMPLE_BASE_URL` to the public-facing URL (e.g. `https://temple.tython.ca`) so OAuth metadata endpoints advertise correct URLs.
+### 6.3 Current Strengths
+- Strong base architecture for interoperability
+- Working long-lived knowledge substrate
+- Practical production learnings already incorporated (auth compatibility, restart durability)
 
-**Claude.ai remote MCP config**: Enter the MCP URL and the pre-registered client credentials:
-- URL: `https://temple.tython.ca/mcp`
-- Client ID: value of `TEMPLE_OAUTH_CLIENT_ID`
-- Client Secret: value of `TEMPLE_OAUTH_CLIENT_SECRET`
+### 6.4 Current Gaps Versus End State
+- `Naming and API semantics`: ingest is still framed as "survey" in public API names
+- `Ingest breadth`: no first-class connectors yet for email/doc/chat pipelines
+- `Extraction quality`: heuristic extraction needs higher-fidelity NLP/LLM-assisted stages
+- `Queue model`: durable state exists, but still file-based and should evolve to stronger structured persistence
+- `Policy controls`: confidence thresholds and write policies need formal configuration by source/type
+- `Operations`: more metrics, alerts, and replay tooling required for enterprise confidence
 
-Claude.ai handles the authorization code + PKCE flow automatically.
+## 7) Transition Plan To End State
 
-**Compatibility endpoints for MCP OAuth discovery**
-- `/.well-known/oauth-protected-resource` (root fallback for clients that do not follow RFC 9728 path-derived discovery)
-- `/mcp/.well-known/oauth-protected-resource` (legacy alias)
-- `/.well-known/oauth-protected-resource/mcp` (RFC 9728 path-derived endpoint)
+### Phase A: Reframe and Generalize Interface
+- Rename public ingest contract from "survey" to general "ingest item"
+- Keep backward-compatible aliases for existing routes
+- Standardize metadata contract for all source types
 
-All three return metadata for the same protected resource (`/mcp`) when auth is enabled.
+### Phase B: Source Connectors
+- email ingest (initially batch import + incremental sync)
+- document ingest (files/folders)
+- conversation ingest (AI transcripts)
 
----
+### Phase C: Intelligence Quality
+- stronger entity linking and canonicalization
+- relation-type taxonomy hardening
+- explainability improvements for each inferred edge
 
-## Verification
+### Phase D: Operational Maturity
+- durable queue backend and replay controls
+- dashboard for queue/review throughput and errors
+- backup/restore and recovery rehearsal automation
 
-1. **Unit tests:** `uv run pytest tests/ -v` — 65 tests covering memory, graph, auth, REST compatibility, and combined runtime
-2. **Health check:** `curl http://localhost:8100/health`
-3. **MCP client test:** Connect to `http://192.168.3.233:8100/mcp`, verify 26 tools discovered
-4. **REST docs test:** `curl http://localhost:8100/openapi.json`
-5. **REST memory test:** `curl -X POST http://localhost:8100/api/v1/memory/store -H 'content-type: application/json' -d '{"content":"hello"}'`
-6. **Graph export test:** `curl http://localhost:8100/api/v1/admin/graph/export`
-7. **Atlas UI test:** Open `http://localhost:8100/atlas` and load graph data
-8. **Persistence test:** `docker compose down && docker compose up -d`, verify memories survive
-9. **Tunnel test:** `curl https://temple.tython.ca/health`
+## 8) Strategic Positioning
+Temple's differentiated value is not "another assistant." It is:
+- a reusable organizational memory layer
+- interoperable across AI vendors and tools
+- designed for compounding context quality over time
+
+That is the end target this architecture is intended to reach.

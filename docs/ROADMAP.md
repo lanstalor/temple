@@ -11,11 +11,9 @@ This roadmap is prioritized for reliability, interoperability, and safe producti
 - Keep compatibility discovery endpoints while client behavior is mixed.
 - Add explicit runbook for safe temporary dynamic registration.
 
-2. Public endpoint confidence checks
-- Add scripted smoke checks for `/health`.
-- Add scripted smoke checks for `/mcp` protocol handshake expectations.
-- Add scripted smoke checks for OAuth metadata endpoints.
-- Add scripted smoke checks for key REST routes.
+2. ~~Public endpoint confidence checks~~ **DONE 2026-02-11**
+- `docker/scripts/smoke-test.sh` — 17 checks covering health, OAuth metadata, MCP, REST auth enforcement, graph export, and memory round-trip.
+- Works against both LAN and public tunnel endpoints.
 
 3. Client playbooks
 - Ship tested connection recipes for Claude Code (Bearer mode).
@@ -25,17 +23,19 @@ This roadmap is prioritized for reliability, interoperability, and safe producti
 
 ## Priority 1: Data and Graph Integrity
 
-1. Graph schema migration completion
-- Run `migrate_graph_schema` in production when backup policy is confirmed.
-- Record migration result and snapshot location.
+1. ~~Graph schema migration completion~~ **DONE 2026-02-11**
+- Migrated legacy → v2: 55 entities, 24 relations, 0 skipped.
+- JSON backup: `data/graph/kuzu_legacy_backup_20260211_152531.json`
+- Filesystem backup: `data/backups/kuzu_pre_migration_20260211_152411`
 
 2. Session lifecycle controls
 - Validate TTL cleanup behavior with realistic multi-session load.
 - Add monitoring for expired-scope cleanup events.
 
-3. Backup and restore drills
-- Automate restore verification from `docker/scripts/backup.sh` artifacts.
-- Add periodic recovery test cadence.
+3. Backup and restore drills — **PARTIALLY DONE 2026-02-11**
+- Fixed `docker/scripts/backup.sh` (Kuzu is a file, not a dir; now copies entire graph/ dir).
+- Added `docker/scripts/restore.sh` with safety checks (container-running guard, confirmation prompt, content verification).
+- TODO: periodic recovery test cadence / cron automation.
 
 ## Priority 2: Ecosystem Expansion
 
