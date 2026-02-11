@@ -59,10 +59,13 @@ Ranking precedence is `session > project > global`.
 | Health | `/health` | Always available for probes |
 | MCP | `/mcp` | Streamable HTTP transport |
 | REST API | `/api/v1/*` | Memory + graph + context + admin |
+| Survey Ingest | `/api/v1/surveys/submit` | Idempotent survey intake + background enrichment |
+| Survey Review Queue | `/api/v1/surveys/reviews` | Human approval/rejection of inferred relations |
+| Relationship Map | `/api/v1/relationship-map` | Explainable graph slice for agents/apps |
 | Graph Export | `/api/v1/admin/graph/export` | Graph payload for visualization tools |
 | OpenAPI | `/openapi.json` | REST schema for tools and SDKs |
 | Swagger UI | `/docs` | Interactive REST docs |
-| Atlas UI | `/atlas` | Interactive graph explorer for entities/relations |
+| Atlas UI | `/atlas` | Interactive graph explorer with saved auth/base URL in browser storage |
 
 ## Authentication Model
 
@@ -156,6 +159,27 @@ curl -X POST "https://temple.tython.ca/api/v1/memory/store" \
   -H "Authorization: Bearer <your-api-key>" \
   -H "content-type: application/json" \
   -d '{"content":"Temple deploy check"}'
+```
+
+Sample survey submit:
+
+```bash
+curl -X POST "https://temple.tython.ca/api/v1/surveys/submit" \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "content-type: application/json" \
+  -d '{
+    "survey_id":"pulse-2026-02",
+    "respondent_id":"lance",
+    "response":"I collaborate with Temple and use Azure for delivery.",
+    "idempotency_key":"pulse-2026-02-lance"
+  }'
+```
+
+Sample relationship map:
+
+```bash
+curl -X GET "https://temple.tython.ca/api/v1/relationship-map?entity=Lance&depth=2&scope=project:survey" \
+  -H "Authorization: Bearer <your-api-key>"
 ```
 
 Sample graph export:

@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import re
+import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 from temple.config import Settings
 from temple.memory.audit_log import AuditLog
@@ -37,6 +42,16 @@ class MemoryBroker:
         self._audit = AuditLog(settings.audit_dir)
         self._context = ContextManager()
         self._last_session_cleanup: datetime | None = None
+        self._survey_lock = threading.Lock()
+        self._survey_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._survey_jobs: dict[str, dict[str, Any]] = {}
+        self._survey_reviews: dict[str, dict[str, Any]] = {}
+        self._survey_worker = threading.Thread(
+            target=self._survey_worker_loop,
+            name="temple-survey-worker",
+            daemon=True,
+        )
+        self._survey_worker.start()
 
     @property
     def context(self) -> ContextManager:
@@ -517,6 +532,10 @@ class MemoryBroker:
         for c in collections:
             memory_counts[c] = self._vector_store.count(c)
 
+        with self._survey_lock:
+            survey_jobs = len(self._survey_jobs)
+            survey_pending_reviews = len([r for r in self._survey_reviews.values() if r["status"] == "pending"])
+
         return {
             "collections": collections,
             "memory_counts": memory_counts,
@@ -525,6 +544,8 @@ class MemoryBroker:
             "relation_count": self._graph_store.relation_count(),
             "graph_schema": self._graph_store.schema_version,
             "active_context": self.get_context(),
+            "survey_jobs": survey_jobs,
+            "survey_pending_reviews": survey_pending_reviews,
         }
 
     def export_knowledge_graph(
@@ -631,7 +652,500 @@ class MemoryBroker:
             })
         return result
 
+    # ── Survey Enrichment Operations ────────────────────────────────
+
+    def submit_survey_response(
+        self,
+        survey_id: str,
+        respondent_id: str,
+        response: str,
+        source: str = "survey",
+        version: str = "1",
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: str = "project:survey",
+    ) -> dict[str, Any]:
+        """Store a survey response and enqueue asynchronous enrichment."""
+        self._maybe_cleanup_expired_sessions()
+        normalized_scope = self._context.parse_scope(scope).scope_key
+        key = idempotency_key.strip() if idempotency_key else None
+        key_tag = f"survey-idem:{key}" if key else None
+
+        if key_tag:
+            existing = self.search_memories(
+                tags=["survey-response", key_tag],
+                scope=normalized_scope,
+                n_results=1,
+            )
+            if existing:
+                memory = existing[0].memory
+                return {
+                    "status": "duplicate",
+                    "job_id": memory.metadata.get("survey_job_id"),
+                    "memory_id": memory.id,
+                    "scope": memory.scope,
+                    "queued": False,
+                }
+
+        job_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        tags = [
+            "survey-response",
+            f"survey:{survey_id}",
+            f"respondent:{respondent_id}",
+        ]
+        if key_tag:
+            tags.append(key_tag)
+
+        merged_meta = dict(metadata or {})
+        merged_meta.update({
+            "survey_id": survey_id,
+            "respondent_id": respondent_id,
+            "source": source,
+            "version": version,
+            "survey_job_id": job_id,
+            "submitted_at": now,
+        })
+
+        entry = self.store_memory(
+            response,
+            tags=tags,
+            metadata=merged_meta,
+            scope=normalized_scope,
+        )
+
+        job_state = {
+            "job_id": job_id,
+            "status": "queued",
+            "survey_id": survey_id,
+            "respondent_id": respondent_id,
+            "source": source,
+            "version": version,
+            "scope": normalized_scope,
+            "memory_id": entry.id,
+            "submitted_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "relations_created": 0,
+            "reviews_created": 0,
+            "entities_touched": 0,
+            "errors": [],
+        }
+        with self._survey_lock:
+            self._survey_jobs[job_id] = job_state
+
+        self._audit.log("survey_submit", normalized_scope, {
+            "job_id": job_id,
+            "survey_id": survey_id,
+            "respondent_id": respondent_id,
+            "memory_id": entry.id,
+            "idempotency_key_present": bool(key_tag),
+        })
+
+        self._survey_queue.put({
+            "job_id": job_id,
+            "survey_id": survey_id,
+            "respondent_id": respondent_id,
+            "source": source,
+            "version": version,
+            "scope": normalized_scope,
+            "memory_id": entry.id,
+            "response": response,
+        })
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "memory_id": entry.id,
+            "scope": normalized_scope,
+            "queued": True,
+        }
+
+    def get_survey_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return current survey job status."""
+        with self._survey_lock:
+            job = self._survey_jobs.get(job_id)
+            if not job:
+                return None
+            return dict(job)
+
+    def list_survey_reviews(self, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
+        """List relation candidates awaiting review (or all statuses)."""
+        target = status.strip().lower()
+        with self._survey_lock:
+            reviews = list(self._survey_reviews.values())
+
+        if target != "all":
+            reviews = [r for r in reviews if r.get("status") == target]
+        reviews.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return reviews[:max(1, min(limit, 1000))]
+
+    def review_survey_relation(
+        self,
+        review_id: str,
+        decision: str,
+        reviewer: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Approve or reject a queued inferred relation."""
+        normalized = decision.strip().lower()
+        if normalized not in {"approve", "reject"}:
+            raise ValueError("decision must be one of: approve, reject")
+
+        with self._survey_lock:
+            record = self._survey_reviews.get(review_id)
+            if not record:
+                return None
+            if record["status"] != "pending":
+                return dict(record)
+
+        applied = False
+        if normalized == "approve":
+            rel = record["candidate"]
+            applied = self._create_relation_in_scope(
+                source=rel["source"],
+                target=rel["target"],
+                relation_type=rel["relation_type"],
+                scope=rel["scope"],
+                confidence=rel.get("confidence", 0.0),
+                provenance=rel.get("provenance", {}),
+            )
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self._survey_lock:
+            record = self._survey_reviews[review_id]
+            record["status"] = "approved" if normalized == "approve" else "rejected"
+            record["reviewed_at"] = now
+            record["reviewer"] = reviewer or ""
+            record["notes"] = notes or ""
+            record["applied"] = applied
+            updated = dict(record)
+
+        self._audit.log("survey_review", updated["candidate"]["scope"], {
+            "review_id": review_id,
+            "decision": normalized,
+            "applied": applied,
+            "reviewer": reviewer or "",
+        })
+        return updated
+
+    def get_relationship_map(
+        self,
+        entity: str,
+        depth: int = 2,
+        scope: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Return an explainable graph slice around an entity."""
+        max_depth = max(1, min(int(depth), 4))
+        max_nodes = max(1, min(int(limit), 1000))
+        normalized_scope = self._context.parse_scope(scope).scope_key if scope else None
+
+        visited: set[str] = {entity}
+        queue_nodes = deque([(entity, 0)])
+        nodes: list[dict[str, Any]] = []
+        relations: list[dict[str, Any]] = []
+        relation_seen: set[tuple[str, str, str, str]] = set()
+
+        while queue_nodes and len(visited) <= max_nodes:
+            current, level = queue_nodes.popleft()
+            node = self._graph_store.get_entity(current, scope=normalized_scope) if normalized_scope else self.get_entity(current)
+            if node:
+                node_payload = {
+                    "name": node["name"],
+                    "entity_type": node.get("entity_type", "unknown"),
+                    "scope": node.get("scope", normalized_scope or "global"),
+                    "observations": node.get("observations", []),
+                }
+                if not any(n["name"] == node_payload["name"] and n["scope"] == node_payload["scope"] for n in nodes):
+                    nodes.append(node_payload)
+
+            if level >= max_depth:
+                continue
+
+            rels = self._graph_store.get_relations(current, direction="both", scope=normalized_scope)
+            for rel in rels:
+                key = (rel["source"], rel["target"], rel["relation_type"], rel["scope"])
+                if key not in relation_seen:
+                    relation_seen.add(key)
+                    relations.append({
+                        "source": rel["source"],
+                        "target": rel["target"],
+                        "relation_type": rel["relation_type"],
+                        "scope": rel["scope"],
+                        "direction": rel["direction"],
+                    })
+
+                neighbor = rel["target"] if rel["source"] == current else rel["source"]
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                queue_nodes.append((neighbor, level + 1))
+                if len(visited) >= max_nodes:
+                    break
+
+        return {
+            "entity": entity,
+            "depth": max_depth,
+            "scope": normalized_scope or "active",
+            "nodes": nodes,
+            "relations": relations,
+            "node_count": len(nodes),
+            "relation_count": len(relations),
+        }
+
     # ── Private Helpers ──────────────────────────────────────────────
+
+    def _survey_worker_loop(self) -> None:
+        """Background worker for survey enrichment jobs."""
+        while True:
+            payload = self._survey_queue.get()
+            job_id = payload.get("job_id", "")
+            now = datetime.now(timezone.utc).isoformat()
+            with self._survey_lock:
+                if job_id in self._survey_jobs:
+                    self._survey_jobs[job_id]["status"] = "processing"
+                    self._survey_jobs[job_id]["started_at"] = now
+
+            try:
+                result = self._process_survey_payload(payload)
+                finished = datetime.now(timezone.utc).isoformat()
+                with self._survey_lock:
+                    if job_id in self._survey_jobs:
+                        self._survey_jobs[job_id]["status"] = "completed"
+                        self._survey_jobs[job_id]["finished_at"] = finished
+                        self._survey_jobs[job_id]["relations_created"] = result["relations_created"]
+                        self._survey_jobs[job_id]["reviews_created"] = result["reviews_created"]
+                        self._survey_jobs[job_id]["entities_touched"] = result["entities_touched"]
+            except Exception as e:
+                logger.exception("Survey enrichment failed for job %s", job_id)
+                failed = datetime.now(timezone.utc).isoformat()
+                with self._survey_lock:
+                    if job_id in self._survey_jobs:
+                        self._survey_jobs[job_id]["status"] = "failed"
+                        self._survey_jobs[job_id]["finished_at"] = failed
+                        self._survey_jobs[job_id]["errors"].append(str(e))
+            finally:
+                self._survey_queue.task_done()
+
+    def _process_survey_payload(self, payload: dict[str, Any]) -> dict[str, int]:
+        """Extract entities/relations from a survey response and apply confidence policy."""
+        scope = payload["scope"]
+        response = payload["response"]
+        respondent = self._normalize_entity_name(payload["respondent_id"])
+        source = payload.get("source", "survey")
+        survey_id = payload.get("survey_id", "")
+        job_id = payload.get("job_id", "")
+        memory_id = payload.get("memory_id", "")
+
+        entities = self._extract_entity_candidates(response)
+        if respondent not in entities:
+            entities.insert(0, respondent)
+
+        touched = 0
+        for entity in entities:
+            entity_type = self._infer_entity_type(entity)
+            created = self._graph_store.create_entity(entity, entity_type, scope=scope)
+            if created:
+                touched += 1
+                self._audit.log("create_entity", scope, {"name": entity, "source": "survey-enrichment"})
+
+        relation_candidates = self._infer_relation_candidates(
+            text=response,
+            respondent=respondent,
+            entities=entities,
+        )
+
+        similar = self.retrieve_memory(response, n_results=3, scope=scope)
+        signal_boost = 0.05 if any(
+            r.memory.id != memory_id and r.score >= 0.88 for r in similar
+        ) else 0.0
+
+        created_relations = 0
+        review_relations = 0
+        for candidate in relation_candidates:
+            confidence = min(0.99, candidate["confidence"] + signal_boost)
+            provenance = {
+                "survey_id": survey_id,
+                "job_id": job_id,
+                "memory_id": memory_id,
+                "source": source,
+                "signal_boost": round(signal_boost, 3),
+            }
+            if confidence >= 0.80:
+                created = self._create_relation_in_scope(
+                    source=candidate["source"],
+                    target=candidate["target"],
+                    relation_type=candidate["relation_type"],
+                    scope=scope,
+                    confidence=confidence,
+                    provenance=provenance,
+                )
+                if created:
+                    created_relations += 1
+            elif confidence >= 0.60:
+                self._enqueue_review_candidate(
+                    candidate={
+                        "source": candidate["source"],
+                        "target": candidate["target"],
+                        "relation_type": candidate["relation_type"],
+                        "scope": scope,
+                        "confidence": round(confidence, 3),
+                        "provenance": provenance,
+                    },
+                    survey_job_id=job_id,
+                    memory_id=memory_id,
+                )
+                review_relations += 1
+
+        self._audit.log("survey_enriched", scope, {
+            "job_id": job_id,
+            "entities_touched": touched,
+            "relations_created": created_relations,
+            "reviews_created": review_relations,
+        })
+        return {
+            "entities_touched": touched,
+            "relations_created": created_relations,
+            "reviews_created": review_relations,
+        }
+
+    def _enqueue_review_candidate(
+        self,
+        candidate: dict[str, Any],
+        survey_job_id: str,
+        memory_id: str,
+    ) -> None:
+        """Queue a medium-confidence inferred relation for human review."""
+        review_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        record = {
+            "review_id": review_id,
+            "status": "pending",
+            "created_at": now,
+            "reviewed_at": None,
+            "reviewer": "",
+            "notes": "",
+            "applied": False,
+            "survey_job_id": survey_job_id,
+            "memory_id": memory_id,
+            "candidate": candidate,
+        }
+        with self._survey_lock:
+            self._survey_reviews[review_id] = record
+        self._audit.log("survey_review_queued", candidate["scope"], {
+            "review_id": review_id,
+            "source": candidate["source"],
+            "target": candidate["target"],
+            "relation_type": candidate["relation_type"],
+            "confidence": candidate["confidence"],
+        })
+
+    def _create_relation_in_scope(
+        self,
+        source: str,
+        target: str,
+        relation_type: str,
+        scope: str,
+        confidence: float,
+        provenance: dict[str, Any],
+    ) -> bool:
+        """Create a relation in a specific scope and audit provenance."""
+        if source == target:
+            return False
+
+        source_exists = self._graph_store.get_entity(source, scope=scope)
+        if not source_exists:
+            self._graph_store.create_entity(source, self._infer_entity_type(source), scope=scope)
+        target_exists = self._graph_store.get_entity(target, scope=scope)
+        if not target_exists:
+            self._graph_store.create_entity(target, self._infer_entity_type(target), scope=scope)
+
+        created = self._graph_store.create_relation(
+            source=source,
+            target=target,
+            relation_type=relation_type,
+            scope=scope,
+        )
+        if created:
+            self._audit.log("create_relation_inferred", scope, {
+                "source": source,
+                "target": target,
+                "relation_type": relation_type,
+                "confidence": round(confidence, 3),
+                "provenance": provenance,
+            })
+        return created
+
+    def _extract_entity_candidates(self, text: str) -> list[str]:
+        """Extract likely entity names from survey text."""
+        proper = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b", text)
+        acronyms = re.findall(r"\b[A-Z]{2,}(?:[0-9]+)?\b", text)
+        blocked = {
+            "I", "We", "The", "This", "That", "And", "But", "For", "With",
+            "You", "Your", "Our", "It", "MCP", "REST", "API",
+        }
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for raw in proper + acronyms:
+            name = self._normalize_entity_name(raw)
+            if not name or name in blocked:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            candidates.append(name)
+        return candidates[:25]
+
+    def _infer_relation_candidates(
+        self,
+        text: str,
+        respondent: str,
+        entities: list[str],
+    ) -> list[dict[str, Any]]:
+        """Infer candidate relations from survey text using lightweight heuristics."""
+        lower = text.lower()
+        relation_type = "related_to"
+        confidence = 0.62
+        if any(k in lower for k in ["work with", "works with", "collaborat", "partner"]):
+            relation_type, confidence = "collaborates_with", 0.86
+        elif any(k in lower for k in ["mentor", "coaching"]):
+            relation_type, confidence = "mentors", 0.84
+        elif any(k in lower for k in ["blocked by", "blocker", "obstacle", "dependency"]):
+            relation_type, confidence = "blocked_by", 0.81
+        elif any(k in lower for k in ["use ", "using ", "tool", "platform"]):
+            relation_type, confidence = "uses", 0.82
+        elif any(k in lower for k in ["interested in", "want to learn", "goal"]):
+            relation_type, confidence = "interested_in", 0.78
+
+        candidates: list[dict[str, Any]] = []
+        for entity in entities:
+            if entity == respondent:
+                continue
+            candidates.append({
+                "source": respondent,
+                "target": entity,
+                "relation_type": relation_type,
+                "confidence": confidence,
+            })
+        return candidates[:50]
+
+    def _normalize_entity_name(self, value: str) -> str:
+        """Normalize an entity string for graph writes."""
+        compact = " ".join(value.strip().split())
+        if not compact:
+            return compact
+        if compact.isupper():
+            return compact
+        return " ".join(part.capitalize() for part in compact.split(" "))
+
+    def _infer_entity_type(self, name: str) -> str:
+        """Infer a coarse entity type from token shape."""
+        if " " in name and name[0].isupper():
+            return "person"
+        if name.isupper():
+            return "technology"
+        return "concept"
 
     def _check_duplicate(self, collection: str, c_hash: str) -> MemoryEntry | None:
         """Check if a memory with this hash already exists."""

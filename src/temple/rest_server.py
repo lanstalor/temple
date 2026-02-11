@@ -75,6 +75,23 @@ class MigrateGraphSchemaRequest(BaseModel):
     backup_path: str | None = None
 
 
+class SurveySubmitRequest(BaseModel):
+    survey_id: str
+    respondent_id: str
+    response: str
+    source: str = "survey"
+    version: str = "1"
+    idempotency_key: str | None = None
+    metadata: dict[str, Any] | None = None
+    scope: str = "project:survey"
+
+
+class SurveyReviewDecisionRequest(BaseModel):
+    decision: str
+    reviewer: str | None = None
+    notes: str | None = None
+
+
 def _build_openapi_schema(base_url: str) -> dict[str, Any]:
     """Build a compact OpenAPI schema for REST compatibility endpoints."""
     components = {
@@ -89,6 +106,8 @@ def _build_openapi_schema(base_url: str) -> dict[str, Any]:
         "ObservationsRequest": ObservationsRequest.model_json_schema(),
         "ContextSetRequest": ContextSetRequest.model_json_schema(),
         "MigrateGraphSchemaRequest": MigrateGraphSchemaRequest.model_json_schema(),
+        "SurveySubmitRequest": SurveySubmitRequest.model_json_schema(),
+        "SurveyReviewDecisionRequest": SurveyReviewDecisionRequest.model_json_schema(),
     }
 
     def req(name: str) -> dict[str, Any]:
@@ -126,6 +145,11 @@ def _build_openapi_schema(base_url: str) -> dict[str, Any]:
             "/api/v1/observations/add": {"post": {"summary": "Add observations", "requestBody": req("ObservationsRequest"), "responses": {"200": {"description": "Result"}}}},
             "/api/v1/observations/remove": {"post": {"summary": "Remove observations", "requestBody": req("ObservationsRequest"), "responses": {"200": {"description": "Result"}}}},
             "/api/v1/context": {"get": {"summary": "Get context", "responses": {"200": {"description": "Context"}}}, "post": {"summary": "Set context", "requestBody": req("ContextSetRequest"), "responses": {"200": {"description": "Context"}}}},
+            "/api/v1/surveys/submit": {"post": {"summary": "Submit survey response and queue enrichment", "requestBody": req("SurveySubmitRequest"), "responses": {"200": {"description": "Queued job"}}}},
+            "/api/v1/surveys/jobs/{job_id}": {"get": {"summary": "Get survey enrichment job status", "responses": {"200": {"description": "Job status"}}}},
+            "/api/v1/surveys/reviews": {"get": {"summary": "List inferred relation review queue", "responses": {"200": {"description": "Review candidates"}}}},
+            "/api/v1/surveys/reviews/{review_id}": {"post": {"summary": "Approve/reject inferred relation", "requestBody": req("SurveyReviewDecisionRequest"), "responses": {"200": {"description": "Review result"}}}},
+            "/api/v1/relationship-map": {"get": {"summary": "Get relationship map around an entity", "responses": {"200": {"description": "Relationship map"}}}},
             "/api/v1/admin/stats": {"get": {"summary": "Get stats", "responses": {"200": {"description": "Stats"}}}},
             "/api/v1/admin/graph/export": {"get": {"summary": "Export graph for visualization", "responses": {"200": {"description": "Graph export"}}}},
             "/api/v1/admin/graph-schema": {"get": {"summary": "Get graph schema status", "responses": {"200": {"description": "Status"}}}},
@@ -1367,6 +1391,101 @@ def create_app(
             return auth
         return JSONResponse(app_broker.list_sessions())
 
+    async def submit_survey(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        try:
+            body = await parse_json(request, SurveySubmitRequest)
+            result = app_broker.submit_survey_response(
+                survey_id=body.survey_id,
+                respondent_id=body.respondent_id,
+                response=body.response,
+                source=body.source,
+                version=body.version,
+                idempotency_key=body.idempotency_key,
+                metadata=body.metadata,
+                scope=body.scope,
+            )
+            return JSONResponse(result)
+        except ValidationError as e:
+            return error(str(e), status=422)
+        except ValueError as e:
+            return error(str(e), status=400)
+
+    async def get_survey_job(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        job_id = request.path_params["job_id"]
+        record = app_broker.get_survey_job(job_id)
+        if record is None:
+            return error(f"Survey job '{job_id}' not found", status=404)
+        return JSONResponse(record)
+
+    async def list_survey_reviews(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        status = request.query_params.get("status", "pending")
+        limit_raw = request.query_params.get("limit", "100")
+        try:
+            limit = max(1, min(int(limit_raw), 1000))
+        except ValueError:
+            return error("limit must be an integer", status=422)
+        return JSONResponse(app_broker.list_survey_reviews(status=status, limit=limit))
+
+    async def review_survey_relation(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        review_id = request.path_params["review_id"]
+        try:
+            body = await parse_json(request, SurveyReviewDecisionRequest)
+            result = app_broker.review_survey_relation(
+                review_id=review_id,
+                decision=body.decision,
+                reviewer=body.reviewer,
+                notes=body.notes,
+            )
+            if result is None:
+                return error(f"Review '{review_id}' not found", status=404)
+            return JSONResponse(result)
+        except ValidationError as e:
+            return error(str(e), status=422)
+        except ValueError as e:
+            return error(str(e), status=400)
+
+    async def relationship_map(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        entity = request.query_params.get("entity", "").strip()
+        if not entity:
+            return error("entity query parameter is required", status=422)
+        depth_raw = request.query_params.get("depth", "2")
+        limit_raw = request.query_params.get("limit", "200")
+        scope = request.query_params.get("scope")
+        try:
+            depth = max(1, min(int(depth_raw), 4))
+        except ValueError:
+            return error("depth must be an integer", status=422)
+        try:
+            limit = max(1, min(int(limit_raw), 1000))
+        except ValueError:
+            return error("limit must be an integer", status=422)
+        try:
+            return JSONResponse(
+                app_broker.get_relationship_map(
+                    entity=entity,
+                    depth=depth,
+                    scope=scope,
+                    limit=limit,
+                )
+            )
+        except ValueError as e:
+            return error(str(e), status=422)
+
     async def get_stats(request: Request) -> JSONResponse:
         auth = require_auth(request)
         if auth:
@@ -1441,6 +1560,11 @@ def create_app(
         Route("/api/v1/context", set_context, methods=["POST"]),
         Route("/api/v1/context/projects", list_projects, methods=["GET"]),
         Route("/api/v1/context/sessions", list_sessions, methods=["GET"]),
+        Route("/api/v1/surveys/submit", submit_survey, methods=["POST"]),
+        Route("/api/v1/surveys/jobs/{job_id}", get_survey_job, methods=["GET"]),
+        Route("/api/v1/surveys/reviews", list_survey_reviews, methods=["GET"]),
+        Route("/api/v1/surveys/reviews/{review_id}", review_survey_relation, methods=["POST"]),
+        Route("/api/v1/relationship-map", relationship_map, methods=["GET"]),
         Route("/api/v1/admin/stats", get_stats, methods=["GET"]),
         Route("/api/v1/admin/graph/export", export_graph, methods=["GET"]),
         Route("/api/v1/admin/graph-schema", get_graph_schema_status, methods=["GET"]),

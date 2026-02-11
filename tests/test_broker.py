@@ -1,6 +1,7 @@
 """Tests for memory broker (integration test - requires embedding model)."""
 
 from datetime import datetime, timedelta, timezone
+import time
 
 import pytest
 
@@ -223,3 +224,31 @@ def test_export_knowledge_graph_includes_scoped_relations(broker):
     assert relation["relation_type"] == "uses"
     assert "source_scope" in relation
     assert "target_scope" in relation
+
+
+def test_survey_enrichment_pipeline_and_relationship_map(broker):
+    """Survey submissions queue enrichment and expose relationship slices."""
+    submitted = broker.submit_survey_response(
+        survey_id="pulse-2026-02",
+        respondent_id="lance",
+        response="I work with Temple and use Azure daily for project delivery.",
+        idempotency_key="pulse-2026-02-lance",
+    )
+    assert submitted["status"] == "queued"
+    assert submitted["job_id"]
+
+    # Wait briefly for background enrichment to complete.
+    for _ in range(100):
+        status = broker.get_survey_job(submitted["job_id"])
+        if status and status["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    status = broker.get_survey_job(submitted["job_id"])
+    assert status is not None
+    assert status["status"] in {"completed", "failed"}
+
+    rel_map = broker.get_relationship_map("Lance", depth=2, scope="project:survey")
+    assert rel_map["entity"] == "Lance"
+    assert "nodes" in rel_map
+    assert "relations" in rel_map

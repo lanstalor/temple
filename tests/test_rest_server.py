@@ -13,6 +13,21 @@ from temple.rest_server import create_app
 class _FakeBroker:
     def __init__(self) -> None:
         self._entries: list[MemoryEntry] = []
+        self._survey_jobs: dict[str, dict[str, Any]] = {}
+        self._survey_reviews: dict[str, dict[str, Any]] = {
+            "rev-1": {
+                "review_id": "rev-1",
+                "status": "pending",
+                "candidate": {
+                    "source": "Lance",
+                    "target": "Temple",
+                    "relation_type": "uses",
+                    "scope": "project:survey",
+                    "confidence": 0.73,
+                    "provenance": {"survey_id": "s-1"},
+                },
+            }
+        }
 
     def health_check(self) -> dict[str, Any]:
         return {"status": "healthy", "graph_schema": "v2"}
@@ -81,6 +96,76 @@ class _FakeBroker:
 
     def get_stats(self) -> dict[str, Any]:
         return {"total_memories": len(self._entries), "graph_schema": "v2"}
+
+    def submit_survey_response(
+        self,
+        survey_id: str,
+        respondent_id: str,
+        response: str,
+        source: str = "survey",
+        version: str = "1",
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: str = "project:survey",
+    ) -> dict[str, Any]:
+        job_id = f"job-{len(self._survey_jobs) + 1}"
+        self._survey_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "survey_id": survey_id,
+            "respondent_id": respondent_id,
+            "scope": scope,
+            "memory_id": f"memory-{job_id}",
+        }
+        return {"status": "queued", "job_id": job_id, "memory_id": f"memory-{job_id}", "scope": scope, "queued": True}
+
+    def get_survey_job(self, job_id: str) -> dict[str, Any] | None:
+        return self._survey_jobs.get(job_id)
+
+    def list_survey_reviews(self, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
+        records = list(self._survey_reviews.values())
+        if status != "all":
+            records = [r for r in records if r["status"] == status]
+        return records[:limit]
+
+    def review_survey_relation(
+        self,
+        review_id: str,
+        decision: str,
+        reviewer: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        record = self._survey_reviews.get(review_id)
+        if not record:
+            return None
+        if decision == "approve":
+            record["status"] = "approved"
+            record["applied"] = True
+        elif decision == "reject":
+            record["status"] = "rejected"
+            record["applied"] = False
+        else:
+            raise ValueError("decision must be one of: approve, reject")
+        record["reviewer"] = reviewer or ""
+        record["notes"] = notes or ""
+        return record
+
+    def get_relationship_map(
+        self,
+        entity: str,
+        depth: int = 2,
+        scope: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        return {
+            "entity": entity,
+            "depth": depth,
+            "scope": scope or "active",
+            "nodes": [{"name": entity, "entity_type": "person", "scope": "global", "observations": []}],
+            "relations": [],
+            "node_count": 1,
+            "relation_count": 0,
+        }
 
     def export_knowledge_graph(
         self,
@@ -193,6 +278,7 @@ async def test_rest_health_and_openapi(tmp_data_dir):
         atlas = await client.get("/atlas")
         assert atlas.status_code == 200
         assert "Temple Atlas" in atlas.text
+        assert "temple.atlas.api_key" in atlas.text
 
 
 @pytest.mark.asyncio
@@ -282,3 +368,45 @@ async def test_rest_export_graph_limit_and_scope_validation(tmp_data_dir):
 
         bad_memory_limit = await client.get("/api/v1/admin/graph/export", params={"memory_limit": "NaN"})
         assert bad_memory_limit.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_rest_survey_and_relationship_endpoints(tmp_data_dir):
+    """Survey submission/review/map routes are available and wired."""
+    app = _make_app(tmp_data_dir)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        queued = await client.post(
+            "/api/v1/surveys/submit",
+            json={
+                "survey_id": "pulse-1",
+                "respondent_id": "lance",
+                "response": "I work with Temple and use Azure for delivery.",
+            },
+        )
+        assert queued.status_code == 200
+        job = queued.json()
+        assert job["status"] == "queued"
+        assert job["job_id"]
+
+        job_status = await client.get(f"/api/v1/surveys/jobs/{job['job_id']}")
+        assert job_status.status_code == 200
+        assert job_status.json()["job_id"] == job["job_id"]
+
+        reviews = await client.get("/api/v1/surveys/reviews")
+        assert reviews.status_code == 200
+        assert len(reviews.json()) >= 1
+
+        review = await client.post(
+            "/api/v1/surveys/reviews/rev-1",
+            json={"decision": "approve", "reviewer": "tester"},
+        )
+        assert review.status_code == 200
+        assert review.json()["status"] == "approved"
+
+        relation_map = await client.get(
+            "/api/v1/relationship-map",
+            params={"entity": "Lance", "depth": "2"},
+        )
+        assert relation_map.status_code == 200
+        assert relation_map.json()["entity"] == "Lance"

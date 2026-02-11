@@ -13,6 +13,8 @@ from temple.models.memory import MemoryEntry, MemorySearchResult
 class _FakeBroker:
     def __init__(self) -> None:
         self._entries: list[MemoryEntry] = []
+        self._survey_jobs: dict[str, dict[str, Any]] = {}
+        self._survey_reviews: dict[str, dict[str, Any]] = {}
 
     def health_check(self) -> dict[str, Any]:
         return {"status": "healthy", "graph_schema": "v2"}
@@ -167,6 +169,60 @@ class _FakeBroker:
     def compact_audit_log(self, scope: str = "global", keep: int = 1000) -> int:
         return 0
 
+    def submit_survey_response(
+        self,
+        survey_id: str,
+        respondent_id: str,
+        response: str,
+        source: str = "survey",
+        version: str = "1",
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: str = "project:survey",
+    ) -> dict[str, Any]:
+        job_id = f"job-{len(self._survey_jobs) + 1}"
+        self._survey_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "survey_id": survey_id,
+            "respondent_id": respondent_id,
+            "scope": scope,
+            "memory_id": f"memory-{job_id}",
+        }
+        return {"status": "queued", "job_id": job_id, "memory_id": f"memory-{job_id}", "scope": scope, "queued": True}
+
+    def get_survey_job(self, job_id: str) -> dict[str, Any] | None:
+        return self._survey_jobs.get(job_id)
+
+    def list_survey_reviews(self, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
+        return []
+
+    def review_survey_relation(
+        self,
+        review_id: str,
+        decision: str,
+        reviewer: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        return None
+
+    def get_relationship_map(
+        self,
+        entity: str,
+        depth: int = 2,
+        scope: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        return {
+            "entity": entity,
+            "depth": depth,
+            "scope": scope or "active",
+            "nodes": [{"name": entity, "entity_type": "person", "scope": "global", "observations": []}],
+            "relations": [],
+            "node_count": 1,
+            "relation_count": 0,
+        }
+
 
 @pytest.mark.asyncio
 async def test_combined_server_exposes_mcp_and_rest_routes():
@@ -178,6 +234,9 @@ async def test_combined_server_exposes_mcp_and_rest_routes():
     assert "/openapi.json" in paths
     assert "/api/v1/admin/graph/export" in paths
     assert "/atlas" in paths
+    assert "/api/v1/surveys/submit" in paths
+    assert "/api/v1/surveys/reviews" in paths
+    assert "/api/v1/relationship-map" in paths
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -201,6 +260,16 @@ async def test_combined_server_exposes_mcp_and_rest_routes():
         )
         assert exported_with_memories.status_code == 200
         assert exported_with_memories.json()["memory_count"] == 1
+
+        survey = await client.post(
+            "/api/v1/surveys/submit",
+            json={"survey_id": "s-1", "respondent_id": "lance", "response": "I use Temple."},
+        )
+        assert survey.status_code == 200
+
+        rel_map = await client.get("/api/v1/relationship-map", params={"entity": "Lance"})
+        assert rel_map.status_code == 200
+        assert rel_map.json()["entity"] == "Lance"
 
 
 @pytest.mark.asyncio
