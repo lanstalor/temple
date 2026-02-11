@@ -383,6 +383,33 @@ async def test_rest_auth_guard(tmp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_rest_basic_auth_bypasses_bearer(tmp_data_dir):
+    """Atlas Basic Auth credentials also authorize API routes that need Bearer."""
+    app = _make_app(tmp_data_dir, api_key="secret-token", atlas_user="admin", atlas_pass="pass")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # No auth → 401
+        resp = await client.get("/api/v1/admin/graph/export")
+        assert resp.status_code == 401
+
+        # Basic Auth → 200
+        creds = base64.b64encode(b"admin:pass").decode()
+        resp = await client.get(
+            "/api/v1/admin/graph/export",
+            headers={"Authorization": f"Basic {creds}"},
+        )
+        assert resp.status_code == 200
+
+        # Store via Basic Auth too
+        resp = await client.post(
+            "/api/v1/memory/store",
+            headers={"Authorization": f"Basic {creds}"},
+            json={"content": "stored via basic auth"},
+        )
+        assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_rest_export_graph_limit_and_scope_validation(tmp_data_dir):
     """Graph export supports query params and validates bad limits."""
     app = _make_app(tmp_data_dir)

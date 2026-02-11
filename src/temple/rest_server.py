@@ -1166,6 +1166,20 @@ def create_app(
     def error(message: str, status: int = 400) -> JSONResponse:
         return JSONResponse({"error": message}, status_code=status)
 
+    def _check_basic_auth(request: Request) -> bool:
+        """Return True if the request carries valid Atlas Basic Auth credentials."""
+        if not app_settings.atlas_user or not app_settings.atlas_pass:
+            return False
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                user, password = decoded.split(":", 1)
+                return user == app_settings.atlas_user and password == app_settings.atlas_pass
+            except Exception:
+                pass
+        return False
+
     def require_auth(request: Request) -> JSONResponse | None:
         if not app_settings.api_key:
             return None
@@ -1173,20 +1187,15 @@ def create_app(
         expected = f"Bearer {app_settings.api_key}"
         if auth == expected:
             return None
+        if _check_basic_auth(request):
+            return None
         return unauthorized()
 
     def require_atlas_auth(request: Request) -> Response | None:
         if not app_settings.atlas_user or not app_settings.atlas_pass:
             return None
-        auth = request.headers.get("authorization", "")
-        if auth.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(auth[6:]).decode("utf-8")
-                user, password = decoded.split(":", 1)
-                if user == app_settings.atlas_user and password == app_settings.atlas_pass:
-                    return None
-            except Exception:
-                pass
+        if _check_basic_auth(request):
+            return None
         return Response(
             "Unauthorized",
             status_code=401,
