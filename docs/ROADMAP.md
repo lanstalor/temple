@@ -50,6 +50,14 @@ This roadmap is prioritized for reliability, interoperability, and safe producti
 - Heuristic fallback when no LLM key is set or API call fails.
 - Extraction method tracked per job for observability.
 
+## Priority 1.6: Atlas UI Hardening — **DONE 2026-02-11**
+
+1. ~~Atlas Basic Auth~~ **DONE**
+- HTTP Basic Auth gate on `/atlas` via `TEMPLE_ATLAS_USER` / `TEMPLE_ATLAS_PASS` env vars.
+- When configured, browser prompts for credentials before serving the page.
+- Atlas Basic Auth credentials also bypass Bearer token on API routes, so client-side graph fetches work without a separate API key.
+- When vars are empty, Atlas remains open (local dev).
+
 ## Priority 2: Ecosystem Expansion
 
 1. First-party REST SDK adapters

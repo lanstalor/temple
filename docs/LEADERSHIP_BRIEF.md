@@ -34,32 +34,29 @@ Then provide cross-tool intelligence such as:
 ### Live and Working
 - Unified platform supports both `MCP` and `REST` integrations
 - Core memory + relationship graph is operational
-- Visual graph explorer is available (`Atlas`)
-- Background enrichment pipeline is running
-- Human review queue exists for ambiguous inferred relationships
+- Visual graph explorer (`Atlas`) with HTTP Basic Auth gate
+- Universal ingest API (`/api/v1/ingest/submit`) — accepts any content type (email, document, chat, meeting note, ticket, note)
+- LLM-assisted entity/relation extraction (Claude via Anthropic API) with heuristic fallback
+- Background enrichment pipeline with confidence gating and human review queue
 - Enrichment state persists across service restarts
+- 92 automated tests, 26 MCP tools
 
 ### Not Yet at End State
-- Ingestion model is still named around a narrow "survey" pattern and needs generalization
-- First-class connectors for inbox/doc/chat ingestion are not yet implemented
-- Extraction quality is currently heuristic and needs stronger NLP/LLM-assisted stages
+- First-class connectors for inbox/doc/chat ingestion are not yet implemented (API is ready, connectors are next)
 - Policy controls and operational dashboards need enterprise hardening
+- Stronger entity linking/canonicalization and cross-document dedup
 
 ## Recommended Next 90 Days
-1. Generalize ingest contract
-- move from "survey" semantics to source-agnostic ingest item semantics
-- keep backward compatibility while transitioning
-
-2. Build highest-value connector first
+1. Build highest-value connector first
 - inbox ingestion (batch + incremental)
 - immediate value for commitment tracking and stakeholder intelligence
 
-3. Improve enrichment quality and governance
-- stronger entity linking and relation inference
+2. Improve enrichment quality and governance
+- stronger entity linking and cross-document dedup
 - configurable confidence thresholds by source/type
 - maintain human approval path for uncertain links
 
-4. Operational hardening
+3. Operational hardening
 - queue/replay controls
 - monitoring and alerting for throughput, errors, review backlog
 - backup/restore drills and documented runbooks

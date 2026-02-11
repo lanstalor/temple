@@ -79,10 +79,12 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    UI["/atlas (Temple Atlas UI)"] --> X["GET /api/v1/admin/graph/export"]
+    UI["/atlas (Temple Atlas UI)"] -->|Basic Auth| X["GET /api/v1/admin/graph/export"]
     X --> B["MemoryBroker.export_knowledge_graph()"]
     B --> GS["GraphStore.search_entities + get_relations"]
     GS --> UI
 ```
+
+Atlas is gated by HTTP Basic Auth (`TEMPLE_ATLAS_USER`/`TEMPLE_ATLAS_PASS`). The browser auto-forwards Basic Auth credentials on subsequent API fetches, so no separate Bearer token is needed. When the env vars are empty, Atlas is open (local dev).
 
 Use `/atlas` for interactive drill-down, scope filtering, and cross-linked relation inspection.

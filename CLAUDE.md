@@ -15,7 +15,7 @@ uv sync --dev
 # Run server locally (defaults to combined MCP+REST mode on :8100)
 uv run python -m temple
 
-# Run tests (89 tests, pytest-asyncio with asyncio_mode=auto)
+# Run tests (92 tests, pytest-asyncio with asyncio_mode=auto)
 uv run pytest tests/ -v
 
 # Run a single test file
@@ -51,7 +51,7 @@ curl http://localhost:8100/health
 - `ContextManager` → in-memory scope state (global/project/session)
 - `embedder.py` → sentence-transformers with ONNX backend
 
-**MCP tools** (`tools/`): Each file exports a `register_*_tools(mcp, broker)` function that decorates functions with `@mcp.tool()`. Tool groups: memory (5), entity (5), relation (4), observation (2), context (4), admin (4).
+**MCP tools** (`tools/`): Each file exports a `register_*_tools(mcp, broker)` function that decorates functions with `@mcp.tool()`. Tool groups: memory (5), entity (5), relation (4), observation (2), context (4), admin (6).
 
 **REST server** (`rest_server.py`): Starlette routes with Pydantic request models. Also serves `/openapi.json`, `/docs` (Swagger UI), and `/atlas` (D3.js graph explorer with inline HTML/JS/CSS).
 
@@ -62,6 +62,8 @@ Three scopes with strict ranking: **session > project > global**. On retrieval, 
 ### Authentication
 
 Dual auth when `TEMPLE_API_KEY` is set: static Bearer token checked first, then OAuth 2.1 tokens via `TempleAuthProvider` (extends FastMCP's `InMemoryOAuthProvider`). `/health` bypasses auth. When `TEMPLE_API_KEY` is empty, auth is disabled.
+
+**Atlas Basic Auth**: The `/atlas` UI is gated by HTTP Basic Auth when `TEMPLE_ATLAS_USER` and `TEMPLE_ATLAS_PASS` are set. Valid Atlas Basic Auth credentials also bypass the Bearer token requirement on API routes, so the browser's automatic credential forwarding lets Atlas fetch graph data without a separate API key. When both vars are empty, Atlas is open (local dev).
 
 ### Ingest and enrichment pipeline
 

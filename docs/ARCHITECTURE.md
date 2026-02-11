@@ -159,7 +159,8 @@ All graph writes should preserve:
 - Combined runtime is live: MCP + REST on one service
 - Public endpoint pattern is established (`temple.tython.ca`)
 - Graph + vector + context foundation is operational
-- Atlas graph UI is available and usable
+- Atlas graph UI is available and usable, protected by HTTP Basic Auth (`TEMPLE_ATLAS_USER`/`TEMPLE_ATLAS_PASS`)
+- Atlas Basic Auth credentials also bypass Bearer token on API routes (browser auto-forwards creds)
 - Background enrichment pipeline exists
 - Confidence gating + review queue exists
 - Job/review persistence across restart is implemented
