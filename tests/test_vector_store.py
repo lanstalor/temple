@@ -94,3 +94,20 @@ def test_query_empty_collection(tmp_path):
     )
 
     assert results["ids"] == [[]]
+
+
+def test_get_all_with_pagination(tmp_path):
+    """Read collection contents using paginated get_all."""
+    store = VectorStore(mode="embedded", persist_dir=str(tmp_path / "chroma"))
+    store.add(
+        collection_name="test",
+        ids=["a", "b", "c"],
+        embeddings=[[0.1] * 768, [0.2] * 768, [0.3] * 768],
+        documents=["doc-a", "doc-b", "doc-c"],
+    )
+
+    first_page = store.get_all("test", limit=2, offset=0)
+    second_page = store.get_all("test", limit=2, offset=2)
+
+    assert len(first_page["ids"]) == 2
+    assert len(second_page["ids"]) == 1

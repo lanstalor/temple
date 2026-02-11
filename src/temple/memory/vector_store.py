@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import chromadb
-from chromadb.config import Settings as ChromaSettings
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +79,24 @@ class VectorStore:
         """Get documents by ID."""
         col = self.get_or_create_collection(collection_name)
         return col.get(ids=ids, include=["documents", "metadatas"])
+
+    def get_all(
+        self,
+        collection_name: str,
+        limit: int = 100,
+        offset: int = 0,
+        where: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Get documents in a collection with pagination."""
+        col = self.get_or_create_collection(collection_name)
+        kwargs: dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "include": ["documents", "metadatas"],
+        }
+        if where:
+            kwargs["where"] = where
+        return col.get(**kwargs)
 
     def delete(
         self,

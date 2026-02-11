@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8100
     log_level: str = "info"
+    runtime_mode: Literal["mcp", "rest", "combined"] = "combined"
+    mcp_transport: Literal["streamable-http", "stdio"] = "streamable-http"
 
     # Authentication (empty = no auth, for local dev)
     api_key: str = ""
@@ -27,6 +29,8 @@ class Settings(BaseSettings):
     # OAuth 2.1 pre-registered client (empty = dynamic registration allowed)
     oauth_client_id: str = ""
     oauth_client_secret: str = ""
+    # Comma-separated OAuth redirect URIs for pre-registered client mode
+    oauth_redirect_uris: str = ""
 
     # ChromaDB
     chroma_mode: Literal["embedded", "http"] = "embedded"
@@ -50,6 +54,11 @@ class Settings(BaseSettings):
         # Kuzu manages its own directory - only ensure parent exists
         self.kuzu_dir.parent.mkdir(parents=True, exist_ok=True)
         self.audit_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def oauth_redirect_uri_list(self) -> list[str]:
+        """Parsed list of pre-registered OAuth redirect URIs."""
+        return [uri.strip() for uri in self.oauth_redirect_uris.split(",") if uri.strip()]
 
 
 # Singleton

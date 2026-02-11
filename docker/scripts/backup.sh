@@ -20,9 +20,9 @@ if [ -d "${DATA_DIR}/chromadb" ]; then
 fi
 
 # Backup Kuzu data
-if [ -d "${DATA_DIR}/kuzu" ]; then
+if [ -d "${DATA_DIR}/graph/kuzu" ]; then
     echo "Backing up Kuzu..."
-    cp -r "${DATA_DIR}/kuzu" "${BACKUP_PATH}/kuzu"
+    cp -r "${DATA_DIR}/graph/kuzu" "${BACKUP_PATH}/kuzu"
 fi
 
 # Backup audit logs

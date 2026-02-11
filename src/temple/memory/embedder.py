@@ -3,26 +3,24 @@
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
-
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded global model
-_model = None
+# Lazy-loaded models keyed by model name.
+_models: dict[str, object] = {}
 
 
 def _get_model(model_name: str = "BAAI/bge-base-en-v1.5"):
     """Lazy-load the sentence-transformers model with ONNX backend."""
-    global _model
-    if _model is None:
+    model = _models.get(model_name)
+    if model is None:
         from sentence_transformers import SentenceTransformer
 
         logger.info(f"Loading embedding model: {model_name}")
-        _model = SentenceTransformer(model_name, backend="onnx")
+        model = SentenceTransformer(model_name, backend="onnx")
+        _models[model_name] = model
         logger.info("Embedding model loaded successfully")
-    return _model
+    return model
 
 
 def embed_text(text: str, model_name: str = "BAAI/bge-base-en-v1.5") -> list[float]:

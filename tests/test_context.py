@@ -1,5 +1,7 @@
 """Tests for context hierarchy."""
 
+import pytest
+
 from temple.memory.context import ContextManager
 from temple.models.context import ContextTier
 
@@ -83,3 +85,14 @@ def test_store_scope_explicit():
     scope = ctx.get_store_scope("session:test")
     assert scope.tier == ContextTier.SESSION
     assert scope.name == "test"
+
+
+def test_parse_scope_invalid_raises():
+    """Invalid scope strings are rejected."""
+    ctx = ContextManager()
+    with pytest.raises(ValueError):
+        ctx.parse_scope("invalid-scope")
+    with pytest.raises(ValueError):
+        ctx.parse_scope("project:")
+    with pytest.raises(ValueError):
+        ctx.parse_scope("session:")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from temple.models.context import ActiveContext, ContextScope, ContextTier
 
@@ -40,7 +39,7 @@ class ContextManager:
         If explicit scope provided, use that. Otherwise use highest active scope.
         """
         if scope:
-            return self._parse_scope(scope)
+            return self.parse_scope(scope)
 
         scopes = self.get_active_scopes()
         return scopes[-1]  # Highest precedence
@@ -51,14 +50,29 @@ class ContextManager:
 
     def _parse_scope(self, scope_str: str) -> ContextScope:
         """Parse a scope string like 'global', 'project:myproj', 'session:abc123'."""
+        if not scope_str:
+            raise ValueError("Scope cannot be empty")
+
         if scope_str == "global":
             return ContextScope(tier=ContextTier.GLOBAL)
-        elif scope_str.startswith("project:"):
-            return ContextScope(tier=ContextTier.PROJECT, name=scope_str[8:])
-        elif scope_str.startswith("session:"):
-            return ContextScope(tier=ContextTier.SESSION, name=scope_str[8:])
-        else:
-            return ContextScope(tier=ContextTier.GLOBAL)
+        if scope_str.startswith("project:"):
+            name = scope_str[8:].strip()
+            if not name:
+                raise ValueError("Project scope must include a non-empty name")
+            return ContextScope(tier=ContextTier.PROJECT, name=name)
+        if scope_str.startswith("session:"):
+            name = scope_str[8:].strip()
+            if not name:
+                raise ValueError("Session scope must include a non-empty identifier")
+            return ContextScope(tier=ContextTier.SESSION, name=name)
+
+        raise ValueError(
+            f"Invalid scope '{scope_str}'. Expected one of: global, project:<name>, session:<id>."
+        )
+
+    def parse_scope(self, scope_str: str) -> ContextScope:
+        """Public parser for scope strings."""
+        return self._parse_scope(scope_str)
 
     def scope_precedence(self, scope: ContextScope) -> int:
         """Return numeric precedence for sorting (higher = more specific)."""

@@ -1,8 +1,7 @@
-"""Admin MCP tools: stats, reindex, export, compact."""
+"""Admin MCP tools: stats, reindex, export, compact, migrations."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from temple.memory.broker import MemoryBroker
@@ -73,5 +72,25 @@ def register_admin_tools(mcp, broker: MemoryBroker) -> None:
         Returns:
             Compaction result with count of removed entries
         """
-        removed = broker._audit.compact(scope, keep)
+        removed = broker.compact_audit_log(scope=scope, keep=keep)
         return {"scope": scope, "entries_removed": removed, "entries_kept": keep}
+
+    @mcp.tool()
+    def get_graph_schema_status() -> dict[str, Any]:
+        """Get graph schema version and migration readiness details."""
+        return broker.get_graph_schema_status()
+
+    @mcp.tool()
+    def migrate_graph_schema(backup_path: str | None = None) -> dict[str, Any]:
+        """Migrate legacy Kuzu graph schema to the current v2 schema.
+
+        A JSON backup snapshot is always written before migration.
+
+        Args:
+            backup_path: Optional path for the migration snapshot JSON.
+                If omitted, Temple writes a timestamped file next to the Kuzu directory.
+
+        Returns:
+            Migration result, including backup path and migrated counts.
+        """
+        return broker.migrate_graph_schema(backup_path=backup_path)

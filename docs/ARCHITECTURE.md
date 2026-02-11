@@ -102,14 +102,14 @@ Retrieval searches all active tiers, results ranked: session > project > global,
 
 ---
 
-## MCP Tools Summary (24 total)
+## MCP Tools Summary (26 total)
 
 **Memory** (5 tools): `store_memory`, `retrieve_memory`, `recall_memory`, `search_memories`, `delete_memory`
 **Entities** (5 tools): `create_entities`, `update_entity`, `delete_entities`, `get_entity`, `search_entities`
 **Relations** (4 tools): `create_relations`, `delete_relations`, `get_relations`, `find_path`
 **Observations** (2 tools): `add_observations`, `remove_observations`
 **Context** (4 tools): `set_context`, `get_context`, `list_projects`, `list_sessions`
-**Admin** (4 tools): `get_stats`, `reindex`, `export_knowledge_graph`, `compact_audit_log`
+**Admin** (6 tools): `get_stats`, `reindex`, `export_knowledge_graph`, `compact_audit_log`, `get_graph_schema_status`, `migrate_graph_schema`
 
 ---
 
@@ -192,7 +192,9 @@ pydantic-settings>=2.0  # Config from env vars
 ## Key Technical Notes
 
 - **Kuzu v0.11+**: Database path must NOT pre-exist as a directory. Kuzu creates its own dir. Mount the parent volume instead (e.g., `data/graph:/app/data/graph` with `TEMPLE_KUZU_DIR=/app/data/graph/kuzu`).
-- **FastMCP v2.14**: Uses `instructions=` not `description=` in constructor. Run method uses `transport="streamable-http"`.
+- **Runtime mode switch**: `TEMPLE_RUNTIME_MODE` chooses `combined` (default), `mcp`, or `rest`.
+- **MCP transport switch**: `TEMPLE_MCP_TRANSPORT` supports `streamable-http` (default) or `stdio` (only valid in `mcp` runtime mode).
+- **FastMCP v2.14**: Uses `instructions=` not `description=` in constructor. Transport is configurable at runtime.
 - **ChromaDB chroma:latest**: Data stored at `/data` inside container (not `/chroma/chroma`). Volume mount: `../data/chromadb:/data`.
 
 ---
@@ -201,9 +203,11 @@ pydantic-settings>=2.0  # Config from env vars
 
 | Method | URL | Use case |
 |--------|-----|----------|
-| LAN | `http://192.168.3.233:8100/mcp` | Claude Code on local network |
-| Tailscale | `http://100.79.174.122:8100/mcp` | Remote access via Tailscale |
-| Cloudflare | `https://temple.tython.ca/mcp` | Public access (any MCP client) |
+| MCP (LAN) | `http://192.168.3.233:8100/mcp` | Claude Code / MCP clients on local network |
+| MCP (Tailscale) | `http://100.79.174.122:8100/mcp` | Remote access via Tailscale |
+| MCP (Cloudflare) | `https://temple.tython.ca/mcp` | Public MCP access (Claude, M365 Copilot, etc.) |
+| REST API | `http://192.168.3.233:8100/api/v1` | ChatGPT Actions, LangChain, LlamaIndex, SK, custom apps |
+| REST Docs | `http://192.168.3.233:8100/docs` | OpenAPI/Swagger UI |
 
 **Cloudflare Tunnel:** ID `2bc0c79a-a0a4-46de-a56e-42dca3d60425`, runs as systemd service `cloudflared-temple.service`.
 
@@ -235,7 +239,7 @@ MCP clients send `Authorization: Bearer <key>` with the static API key. Works wi
 #### 2. OAuth 2.1 (Authorization Code + PKCE)
 Claude.ai's remote MCP connector requires OAuth 2.1. Temple advertises OAuth metadata at `/.well-known/oauth-protected-resource` and supports:
 
-- **Pre-registered client** — set `TEMPLE_OAUTH_CLIENT_ID` + `TEMPLE_OAUTH_CLIENT_SECRET` to lock down access (recommended for public endpoints). Dynamic registration is disabled when a client is pre-registered.
+- **Pre-registered client** — set `TEMPLE_OAUTH_CLIENT_ID`, `TEMPLE_OAUTH_CLIENT_SECRET`, and `TEMPLE_OAUTH_REDIRECT_URIS` (comma-separated) to lock down access (recommended for public endpoints). Dynamic registration is disabled when a client is pre-registered.
 - **Dynamic client registration** — if no client is pre-registered, any client can auto-register (suitable for trusted networks only).
 - **Authorization code flow with PKCE** — auto-approved (single-user server, no consent screen)
 - **Token exchange** — issues in-memory access/refresh tokens (lost on restart; clients re-register automatically)
@@ -253,8 +257,10 @@ Claude.ai handles the authorization code + PKCE flow automatically.
 
 ## Verification
 
-1. **Unit tests:** `uv run pytest tests/ -v` — 47 tests covering all modules
+1. **Unit tests:** `uv run pytest tests/ -v` — 65 tests covering memory, graph, auth, REST compatibility, and combined runtime
 2. **Health check:** `curl http://localhost:8100/health`
-3. **MCP client test:** Connect to `http://192.168.3.233:8100/mcp`, verify 24 tools discovered
-4. **Persistence test:** `docker compose down && docker compose up -d`, verify memories survive
-5. **Tunnel test:** `curl https://temple.tython.ca/health`
+3. **MCP client test:** Connect to `http://192.168.3.233:8100/mcp`, verify 26 tools discovered
+4. **REST docs test:** `curl http://localhost:8100/openapi.json`
+5. **REST memory test:** `curl -X POST http://localhost:8100/api/v1/memory/store -H 'content-type: application/json' -d '{"content":"hello"}'`
+6. **Persistence test:** `docker compose down && docker compose up -d`, verify memories survive
+7. **Tunnel test:** `curl https://temple.tython.ca/health`

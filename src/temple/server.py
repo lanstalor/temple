@@ -5,67 +5,21 @@ from __future__ import annotations
 import logging
 
 from fastmcp import FastMCP
-from fastmcp.server.auth import AccessToken
-from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
-from mcp.server.auth.settings import ClientRegistrationOptions
 
-from temple.config import settings
+from temple.auth import build_auth_provider
+from temple.config import Settings, settings
 from temple.memory.broker import MemoryBroker
-from temple.tools.memory_tools import register_memory_tools
-from temple.tools.entity_tools import register_entity_tools
-from temple.tools.relation_tools import register_relation_tools
-from temple.tools.observation_tools import register_observation_tools
-from temple.tools.context_tools import register_context_tools
 from temple.tools.admin_tools import register_admin_tools
+from temple.tools.context_tools import register_context_tools
+from temple.tools.entity_tools import register_entity_tools
+from temple.tools.memory_tools import register_memory_tools
+from temple.tools.observation_tools import register_observation_tools
+from temple.tools.relation_tools import register_relation_tools
 
-
-class TempleAuthProvider(InMemoryOAuthProvider):
-    """OAuth 2.1 provider that also accepts a static API key.
-
-    - Static Bearer token  → Copilot Studio, Claude Code, curl
-    - OAuth 2.1 flow       → Claude.ai remote MCP (dynamic registration)
-    """
-
-    def __init__(self, api_key: str, **kwargs):
-        super().__init__(**kwargs)
-        self._api_key = api_key
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        # Check static API key first
-        if self._api_key and token == self._api_key:
-            return AccessToken(
-                token=token,
-                client_id="static",
-                scopes=["temple"],
-            )
-        # Fall back to OAuth-issued tokens
-        return await super().verify_token(token)
-
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper()),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
+_LOGGING_CONFIGURED = False
 
-# Build auth provider if API key is configured
-_auth = None
-if settings.api_key:
-    logger.info("API key + OAuth 2.1 (open registration) authentication enabled")
-    _auth = TempleAuthProvider(
-        api_key=settings.api_key,
-        base_url=settings.base_url or None,
-        client_registration_options=ClientRegistrationOptions(
-            enabled=True,
-            valid_scopes=["temple"],
-            default_scopes=["temple"],
-        ),
-    )
-
-# Create MCP server
-mcp = FastMCP(
-    "Temple Memory Broker",
-    instructions="""\
+INSTRUCTIONS = """\
 Temple is a personal knowledge graph — a persistent, growing foundation of knowledge that makes AI agents more useful over time. It stores memories, entities, and their relationships so that context is never lost between conversations.
 
 ## Core Concepts
@@ -95,38 +49,77 @@ When retrieving, Temple searches all active scopes and ranks results by preceden
 4. **Tag consistently.** Tags like "preference", "decision", "project-note", "learning" make memories findable beyond semantic search.
 5. **Build the graph organically.** When you learn something new about an existing entity, add observations. When you discover a connection, create a relation. The graph grows naturally through use.
 6. **Scope appropriately.** Project-specific knowledge should be stored in a project context. Universal knowledge goes to global. Use get_context to check where you are before storing.
-""",
-    auth=_auth,
-)
-
-# Initialize broker
-broker = MemoryBroker(settings)
-
-# Register all tools
-register_memory_tools(mcp, broker)
-register_entity_tools(mcp, broker)
-register_relation_tools(mcp, broker)
-register_observation_tools(mcp, broker)
-register_context_tools(mcp, broker)
-register_admin_tools(mcp, broker)
+"""
 
 
-# Health endpoint (non-MCP, for Docker health checks)
-@mcp.custom_route("/health", methods=["GET"])
-async def health(request):
-    from starlette.responses import JSONResponse
+def configure_logging(config: Settings) -> None:
+    """Configure process logging once."""
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+    logging.basicConfig(
+        level=getattr(logging, config.log_level.upper()),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    _LOGGING_CONFIGURED = True
 
-    status = broker.health_check()
-    return JSONResponse(status)
+
+def create_mcp_server(
+    broker: MemoryBroker | None = None,
+    config: Settings | None = None,
+) -> FastMCP:
+    """Create and configure the MCP server with all Temple tools."""
+    cfg = config or settings
+    configure_logging(cfg)
+    auth = build_auth_provider(cfg, logger=logger)
+    active_broker = broker or MemoryBroker(cfg)
+
+    mcp = FastMCP(
+        "Temple Memory Broker",
+        instructions=INSTRUCTIONS,
+        auth=auth,
+    )
+
+    register_memory_tools(mcp, active_broker)
+    register_entity_tools(mcp, active_broker)
+    register_relation_tools(mcp, active_broker)
+    register_observation_tools(mcp, active_broker)
+    register_context_tools(mcp, active_broker)
+    register_admin_tools(mcp, active_broker)
+
+    # Health endpoint (non-MCP, for Docker health checks)
+    @mcp.custom_route("/health", methods=["GET"])
+    async def health(request):
+        from starlette.responses import JSONResponse
+
+        status = active_broker.health_check()
+        return JSONResponse(status)
+
+    return mcp
 
 
-def main():
+def main() -> None:
     """Run the MCP server."""
-    logger.info(f"Starting Temple Memory Broker on {settings.host}:{settings.port}")
+    cfg = settings
+    configure_logging(cfg)
+    transport = cfg.mcp_transport
+    mcp = create_mcp_server(config=cfg)
+
+    if transport == "stdio":
+        logger.info("Starting Temple Memory Broker with stdio transport")
+        mcp.run(transport="stdio")
+        return
+
+    logger.info(
+        "Starting Temple Memory Broker on %s:%s with %s transport",
+        cfg.host,
+        cfg.port,
+        transport,
+    )
     mcp.run(
-        transport="streamable-http",
-        host=settings.host,
-        port=settings.port,
+        transport=transport,
+        host=cfg.host,
+        port=cfg.port,
     )
 
 
