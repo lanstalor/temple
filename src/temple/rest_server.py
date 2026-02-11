@@ -192,7 +192,13 @@ def _build_actions_openapi_schema(base_url: str) -> dict[str, Any]:
             "description": description,
             "content": {
                 "application/json": {
-                    "schema": {"type": "object"},
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string"},
+                        },
+                        "additionalProperties": True,
+                    },
                 }
             },
         }
@@ -461,7 +467,13 @@ def _build_actions_openapi_schema(base_url: str) -> dict[str, Any]:
                     "properties": {
                         "content": {"type": "string"},
                         "tags": {"type": "array", "items": {"type": "string"}},
-                        "metadata": {"type": "object", "additionalProperties": True},
+                        "metadata": {
+                            "type": "object",
+                            "properties": {
+                                "_note": {"type": "string"},
+                            },
+                            "additionalProperties": True,
+                        },
                         "scope": {"type": "string"},
                     },
                 },
@@ -489,7 +501,18 @@ def _build_actions_openapi_schema(base_url: str) -> dict[str, Any]:
                     "properties": {
                         "entities": {
                             "type": "array",
-                            "items": {"type": "object", "additionalProperties": True},
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "entity_type": {"type": "string"},
+                                    "observations": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "additionalProperties": True,
+                            },
                         }
                     },
                 },
@@ -527,7 +550,13 @@ def _build_actions_openapi_schema(base_url: str) -> dict[str, Any]:
                         "source_id": {"type": "string"},
                         "timestamp": {"type": "string"},
                         "idempotency_key": {"type": "string"},
-                        "metadata": {"type": "object", "additionalProperties": True},
+                        "metadata": {
+                            "type": "object",
+                            "properties": {
+                                "_note": {"type": "string"},
+                            },
+                            "additionalProperties": True,
+                        },
                         "scope": {"type": "string", "default": "global"},
                     },
                 },
@@ -1527,6 +1556,17 @@ def create_app(
     def error(message: str, status: int = 400) -> JSONResponse:
         return JSONResponse({"error": message}, status_code=status)
 
+    def request_base_url(request: Request) -> str:
+        """Resolve externally reachable base URL, honoring reverse-proxy headers."""
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+        forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        if forwarded_proto and forwarded_host:
+            return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+        host = request.headers.get("host", "").strip()
+        if forwarded_proto and host:
+            return f"{forwarded_proto}://{host}".rstrip("/")
+        return str(request.base_url).rstrip("/")
+
     def _check_basic_auth(request: Request) -> bool:
         """Return True if the request carries valid Atlas Basic Auth credentials."""
         if not app_settings.atlas_user or not app_settings.atlas_pass:
@@ -1571,11 +1611,11 @@ def create_app(
         return JSONResponse(app_broker.health_check())
 
     async def openapi(request: Request) -> JSONResponse:
-        base_url = str(request.base_url).rstrip("/")
+        base_url = request_base_url(request)
         return JSONResponse(_build_openapi_schema(base_url))
 
     async def openapi_actions(request: Request) -> JSONResponse:
-        base_url = str(request.base_url).rstrip("/")
+        base_url = request_base_url(request)
         return JSONResponse(_build_actions_openapi_schema(base_url))
 
     async def docs(_: Request) -> HTMLResponse:
