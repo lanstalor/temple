@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 from fastmcp import FastMCP
 
@@ -52,6 +53,39 @@ When retrieving, Temple searches all active scopes and ranks results by preceden
 """
 
 
+def _public_base_url(request, config: Settings) -> str:
+    """Resolve public base URL for OAuth metadata."""
+    configured = config.base_url.strip().rstrip("/")
+    if configured:
+        return configured
+    return str(request.base_url).rstrip("/")
+
+
+def _normalize_resource_path(resource: str) -> str | None:
+    """Normalize a resource indicator into a request path."""
+    candidate = resource.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("/"):
+        return candidate.rstrip("/") or "/"
+
+    parsed = urlsplit(candidate)
+    if parsed.scheme and parsed.netloc:
+        return (parsed.path or "/").rstrip("/") or "/"
+    return None
+
+
+def _oauth_protected_resource_metadata(request, config: Settings) -> dict[str, list[str] | str]:
+    """Build OAuth protected resource metadata for the MCP endpoint."""
+    base_url = _public_base_url(request, config)
+    return {
+        "resource": f"{base_url}/mcp",
+        "authorization_servers": [f"{base_url}/"],
+        "scopes_supported": ["temple"],
+        "bearer_methods_supported": ["header"],
+    }
+
+
 def configure_logging(config: Settings) -> None:
     """Configure process logging once."""
     global _LOGGING_CONFIGURED
@@ -94,6 +128,35 @@ def create_mcp_server(
 
         status = active_broker.health_check()
         return JSONResponse(status)
+
+    # Compatibility metadata routes for MCP OAuth discovery clients.
+    @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+    async def oauth_protected_resource(request):
+        from starlette.responses import JSONResponse, PlainTextResponse
+
+        if not cfg.api_key:
+            return PlainTextResponse("Not Found", status_code=404)
+
+        requested_resource = request.query_params.get("resource", "")
+        if requested_resource:
+            resource_path = _normalize_resource_path(requested_resource)
+            if resource_path != "/mcp":
+                return PlainTextResponse("Not Found", status_code=404)
+
+        response = JSONResponse(_oauth_protected_resource_metadata(request, cfg))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @mcp.custom_route("/mcp/.well-known/oauth-protected-resource", methods=["GET"])
+    async def oauth_protected_resource_alias(request):
+        from starlette.responses import JSONResponse, PlainTextResponse
+
+        if not cfg.api_key:
+            return PlainTextResponse("Not Found", status_code=404)
+
+        response = JSONResponse(_oauth_protected_resource_metadata(request, cfg))
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     return mcp
 

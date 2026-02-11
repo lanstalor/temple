@@ -253,6 +253,13 @@ Set `TEMPLE_BASE_URL` to the public-facing URL (e.g. `https://temple.tython.ca`)
 
 Claude.ai handles the authorization code + PKCE flow automatically.
 
+**Compatibility endpoints for MCP OAuth discovery**
+- `/.well-known/oauth-protected-resource` (root fallback for clients that do not follow RFC 9728 path-derived discovery)
+- `/mcp/.well-known/oauth-protected-resource` (legacy alias)
+- `/.well-known/oauth-protected-resource/mcp` (RFC 9728 path-derived endpoint)
+
+All three return metadata for the same protected resource (`/mcp`) when auth is enabled.
+
 ---
 
 ## Verification

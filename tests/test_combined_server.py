@@ -155,3 +155,63 @@ async def test_combined_server_rest_auth_guard():
             json={"content": "allowed"},
         )
         assert authorized.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_combined_server_oauth_protected_resource_compatibility_routes():
+    """Expose compatibility metadata endpoints for MCP OAuth discovery clients."""
+    app = create_app(
+        broker=_FakeBroker(),
+        config=Settings(
+            api_key="abc123",
+            base_url="https://temple.tython.ca",
+        ),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        expected = {
+            "resource": "https://temple.tython.ca/mcp",
+            "authorization_servers": ["https://temple.tython.ca/"],
+            "scopes_supported": ["temple"],
+            "bearer_methods_supported": ["header"],
+        }
+
+        root = await client.get("/.well-known/oauth-protected-resource")
+        assert root.status_code == 200
+        assert root.json() == expected
+        assert root.headers["cache-control"] == "no-store"
+
+        alias = await client.get("/mcp/.well-known/oauth-protected-resource")
+        assert alias.status_code == 200
+        assert alias.json() == expected
+
+        with_abs_resource = await client.get(
+            "/.well-known/oauth-protected-resource",
+            params={"resource": "https://temple.tython.ca/mcp"},
+        )
+        assert with_abs_resource.status_code == 200
+
+        with_rel_resource = await client.get(
+            "/.well-known/oauth-protected-resource",
+            params={"resource": "/mcp"},
+        )
+        assert with_rel_resource.status_code == 200
+
+        mismatched_resource = await client.get(
+            "/.well-known/oauth-protected-resource",
+            params={"resource": "https://example.com/not-mcp"},
+        )
+        assert mismatched_resource.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_combined_server_oauth_protected_resource_hidden_when_auth_disabled():
+    """Do not advertise OAuth protected-resource metadata when auth is off."""
+    app = create_app(broker=_FakeBroker(), config=Settings(api_key=""))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        root = await client.get("/.well-known/oauth-protected-resource")
+        assert root.status_code == 404
+
+        alias = await client.get("/mcp/.well-known/oauth-protected-resource")
+        assert alias.status_code == 404
