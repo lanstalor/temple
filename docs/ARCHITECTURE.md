@@ -208,6 +208,8 @@ pydantic-settings>=2.0  # Config from env vars
 | MCP (Cloudflare) | `https://temple.tython.ca/mcp` | Public MCP access (Claude, M365 Copilot, etc.) |
 | REST API | `http://192.168.3.233:8100/api/v1` | ChatGPT Actions, LangChain, LlamaIndex, SK, custom apps |
 | REST Docs | `http://192.168.3.233:8100/docs` | OpenAPI/Swagger UI |
+| Graph Export | `http://192.168.3.233:8100/api/v1/admin/graph/export` | JSON export for graph visualization |
+| Atlas UI | `http://192.168.3.233:8100/atlas` | Interactive entity/relation explorer |
 
 **Cloudflare Tunnel:** ID `2bc0c79a-a0a4-46de-a56e-42dca3d60425`, runs as systemd service `cloudflared-temple.service`.
 
@@ -269,5 +271,7 @@ All three return metadata for the same protected resource (`/mcp`) when auth is 
 3. **MCP client test:** Connect to `http://192.168.3.233:8100/mcp`, verify 26 tools discovered
 4. **REST docs test:** `curl http://localhost:8100/openapi.json`
 5. **REST memory test:** `curl -X POST http://localhost:8100/api/v1/memory/store -H 'content-type: application/json' -d '{"content":"hello"}'`
-6. **Persistence test:** `docker compose down && docker compose up -d`, verify memories survive
-7. **Tunnel test:** `curl https://temple.tython.ca/health`
+6. **Graph export test:** `curl http://localhost:8100/api/v1/admin/graph/export`
+7. **Atlas UI test:** Open `http://localhost:8100/atlas` and load graph data
+8. **Persistence test:** `docker compose down && docker compose up -d`, verify memories survive
+9. **Tunnel test:** `curl https://temple.tython.ca/health`

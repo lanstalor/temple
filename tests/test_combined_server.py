@@ -82,6 +82,34 @@ class _FakeBroker:
     def get_stats(self) -> dict[str, Any]:
         return {"total_memories": len(self._entries), "graph_schema": "v2"}
 
+    def export_knowledge_graph(
+        self,
+        scope: str | None = None,
+        limit: int = 10000,
+    ) -> dict[str, Any]:
+        entities = [
+            {"name": "Temple", "entity_type": "project", "observations": ["memory broker"], "scope": "project:temple"},
+            {"name": "Claude", "entity_type": "agent", "observations": ["connects via MCP"], "scope": "global"},
+        ]
+        relations = [
+            {
+                "source": "Claude",
+                "source_scope": "global",
+                "target": "Temple",
+                "target_scope": "project:temple",
+                "relation_type": "uses",
+                "scope": "global",
+                "created_at": "",
+            }
+        ]
+        return {
+            "entities": entities[:limit],
+            "relations": relations,
+            "entity_count": min(len(entities), limit),
+            "relation_count": len(relations),
+            "scope": scope or "all",
+        }
+
     def get_graph_schema_status(self) -> dict[str, Any]:
         return {"schema_version": "v2", "legacy_schema_detected": False}
 
@@ -130,6 +158,8 @@ async def test_combined_server_exposes_mcp_and_rest_routes():
     assert "/mcp" in paths
     assert "/api/v1/memory/store" in paths
     assert "/openapi.json" in paths
+    assert "/api/v1/admin/graph/export" in paths
+    assert "/atlas" in paths
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -138,6 +168,14 @@ async def test_combined_server_exposes_mcp_and_rest_routes():
 
         stored = await client.post("/api/v1/memory/store", json={"content": "combined mode"})
         assert stored.status_code == 200
+
+        atlas = await client.get("/atlas")
+        assert atlas.status_code == 200
+        assert "Temple Atlas" in atlas.text
+
+        exported = await client.get("/api/v1/admin/graph/export")
+        assert exported.status_code == 200
+        assert exported.json()["entity_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -155,6 +193,15 @@ async def test_combined_server_rest_auth_guard():
             json={"content": "allowed"},
         )
         assert authorized.status_code == 200
+
+        denied_export = await client.get("/api/v1/admin/graph/export")
+        assert denied_export.status_code == 401
+
+        allowed_export = await client.get(
+            "/api/v1/admin/graph/export",
+            headers={"Authorization": "Bearer abc123"},
+        )
+        assert allowed_export.status_code == 200
 
 
 @pytest.mark.asyncio

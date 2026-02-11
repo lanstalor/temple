@@ -59,8 +59,10 @@ Ranking precedence is `session > project > global`.
 | Health | `/health` | Always available for probes |
 | MCP | `/mcp` | Streamable HTTP transport |
 | REST API | `/api/v1/*` | Memory + graph + context + admin |
+| Graph Export | `/api/v1/admin/graph/export` | Graph payload for visualization tools |
 | OpenAPI | `/openapi.json` | REST schema for tools and SDKs |
 | Swagger UI | `/docs` | Interactive REST docs |
+| Atlas UI | `/atlas` | Interactive graph explorer for entities/relations |
 
 ## Authentication Model
 
@@ -156,6 +158,13 @@ curl -X POST "https://temple.tython.ca/api/v1/memory/store" \
   -d '{"content":"Temple deploy check"}'
 ```
 
+Sample graph export:
+
+```bash
+curl -X GET "https://temple.tython.ca/api/v1/admin/graph/export" \
+  -H "Authorization: Bearer <your-api-key>"
+```
+
 ## Runtime Modes
 
 Set `TEMPLE_RUNTIME_MODE`:
@@ -201,6 +210,7 @@ bash docker/scripts/backup.sh
 - `docs/ARCHITECTURE.md`: full system design and deployment details.
 - `docs/UPDATES_2026-02-11.md`: detailed last-24-hour change log and lessons learned.
 - `docs/ROADMAP.md`: prioritized next steps.
+- `docs/VISUALS.md`: architecture and flow diagram pack.
 
 ## Status Snapshot
 

@@ -42,18 +42,7 @@ def register_admin_tools(mcp, broker: MemoryBroker) -> None:
         Returns:
             Dict with entities list, relations list, and counts
         """
-        entities = broker.search_entities(limit=10000)
-        all_relations = []
-        for entity in entities:
-            rels = broker.get_relations(entity["name"], direction="out")
-            all_relations.extend(rels)
-
-        return {
-            "entities": entities,
-            "relations": all_relations,
-            "entity_count": len(entities),
-            "relation_count": len(all_relations),
-        }
+        return broker.export_knowledge_graph()
 
     @mcp.tool()
     def compact_audit_log(

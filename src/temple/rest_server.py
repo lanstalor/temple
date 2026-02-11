@@ -127,11 +127,839 @@ def _build_openapi_schema(base_url: str) -> dict[str, Any]:
             "/api/v1/observations/remove": {"post": {"summary": "Remove observations", "requestBody": req("ObservationsRequest"), "responses": {"200": {"description": "Result"}}}},
             "/api/v1/context": {"get": {"summary": "Get context", "responses": {"200": {"description": "Context"}}}, "post": {"summary": "Set context", "requestBody": req("ContextSetRequest"), "responses": {"200": {"description": "Context"}}}},
             "/api/v1/admin/stats": {"get": {"summary": "Get stats", "responses": {"200": {"description": "Stats"}}}},
+            "/api/v1/admin/graph/export": {"get": {"summary": "Export graph for visualization", "responses": {"200": {"description": "Graph export"}}}},
             "/api/v1/admin/graph-schema": {"get": {"summary": "Get graph schema status", "responses": {"200": {"description": "Status"}}}},
             "/api/v1/admin/graph-schema/migrate": {"post": {"summary": "Migrate graph schema", "requestBody": req("MigrateGraphSchemaRequest"), "responses": {"200": {"description": "Migration result"}}}},
         },
         "components": {"schemas": components},
     }
+
+
+def _build_atlas_html() -> str:
+    """Return the Temple Atlas interactive graph viewer page."""
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Temple Atlas</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --bg: #f5f2e8;
+        --bg2: #ece6d6;
+        --panel: #fcfbf8;
+        --ink: #1f2a24;
+        --muted: #5f695f;
+        --global: #2a9d8f;
+        --project: #e76f51;
+        --session: #e63946;
+        --edge: #6c757d;
+        --ring: #1f2a24;
+        --ok: #2b9348;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+        background:
+          radial-gradient(circle at 12% 18%, rgba(42,157,143,0.18), transparent 36%),
+          radial-gradient(circle at 88% 10%, rgba(231,111,81,0.19), transparent 32%),
+          radial-gradient(circle at 84% 88%, rgba(230,57,70,0.16), transparent 28%),
+          linear-gradient(140deg, var(--bg), var(--bg2));
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(31,42,36,0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(31,42,36,0.03) 1px, transparent 1px);
+        background-size: 24px 24px;
+        mask-image: radial-gradient(circle at center, black 35%, transparent 85%);
+      }
+      .shell {
+        padding: 20px;
+        display: grid;
+        gap: 14px;
+      }
+      .hero {
+        border: 1px solid rgba(31,42,36,0.14);
+        border-radius: 18px;
+        padding: 16px 18px;
+        background: linear-gradient(145deg, rgba(252,251,248,0.9), rgba(252,251,248,0.74));
+        backdrop-filter: blur(2px);
+        box-shadow: 0 12px 30px rgba(31,42,36,0.08);
+        animation: reveal 500ms ease-out;
+      }
+      .hero h1 {
+        margin: 0;
+        font-family: "Sora", "IBM Plex Sans", sans-serif;
+        letter-spacing: 0.02em;
+        font-size: clamp(1.25rem, 2vw, 1.8rem);
+      }
+      .hero p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      .controls {
+        border: 1px solid rgba(31,42,36,0.14);
+        border-radius: 18px;
+        padding: 14px;
+        background: rgba(252,251,248,0.92);
+        box-shadow: 0 8px 24px rgba(31,42,36,0.07);
+        animation: reveal 560ms ease-out;
+      }
+      .control-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+      .field label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #465048;
+      }
+      .field input,
+      .field select,
+      .field button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(31,42,36,0.22);
+        padding: 9px 10px;
+        min-height: 38px;
+        background: #fffdfa;
+        color: var(--ink);
+        font: inherit;
+      }
+      .field input:focus,
+      .field select:focus {
+        outline: 2px solid rgba(42,157,143,0.45);
+        outline-offset: 1px;
+      }
+      .field button {
+        border: none;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+        background: linear-gradient(160deg, #1f7a71, var(--global));
+      }
+      .field button.secondary {
+        background: linear-gradient(160deg, #6f4e37, #a47148);
+      }
+      .field button:hover {
+        filter: brightness(1.04);
+      }
+      .field.span-2 {
+        grid-column: span 2;
+      }
+      .field.span-3 {
+        grid-column: span 3;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 1.8fr 1fr;
+        gap: 14px;
+      }
+      .panel {
+        border: 1px solid rgba(31,42,36,0.15);
+        border-radius: 18px;
+        background: rgba(252,251,248,0.94);
+        box-shadow: 0 10px 28px rgba(31,42,36,0.08);
+        overflow: hidden;
+        animation: reveal 620ms ease-out;
+      }
+      .panel-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(31,42,36,0.12);
+      }
+      .panel-title {
+        margin: 0;
+        font: 600 0.95rem "Sora", sans-serif;
+      }
+      .status {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+      #graph-wrap {
+        height: min(74vh, 760px);
+        position: relative;
+      }
+      #graph {
+        width: 100%;
+        height: 100%;
+      }
+      .empty {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        color: var(--muted);
+        padding: 20px;
+        font-size: 0.95rem;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .stat {
+        border: 1px solid rgba(31,42,36,0.12);
+        border-radius: 12px;
+        padding: 10px 11px;
+        background: rgba(255,255,255,0.8);
+      }
+      .stat .label {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--muted);
+      }
+      .stat .value {
+        margin-top: 4px;
+        font: 600 1.15rem "Sora", sans-serif;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 10px;
+      }
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+      }
+      .detail {
+        padding: 14px;
+        display: grid;
+        gap: 10px;
+        height: calc(min(74vh, 760px) - 49px);
+        overflow: auto;
+      }
+      .detail h3 {
+        margin: 0;
+        font: 600 1rem "Sora", sans-serif;
+      }
+      .pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 0.75rem;
+        border: 1px solid rgba(31,42,36,0.2);
+        color: #304138;
+        background: rgba(255,255,255,0.85);
+      }
+      .block {
+        border: 1px solid rgba(31,42,36,0.12);
+        border-radius: 12px;
+        padding: 10px;
+        background: #fffefb;
+      }
+      .block h4 {
+        margin: 0 0 8px;
+        font-size: 0.85rem;
+        letter-spacing: 0.03em;
+      }
+      .list {
+        margin: 0;
+        padding-left: 16px;
+        display: grid;
+        gap: 6px;
+        color: #2e3a32;
+      }
+      .list li {
+        line-height: 1.35;
+      }
+      .xref {
+        border: none;
+        background: none;
+        text-decoration: underline;
+        cursor: pointer;
+        color: #17635a;
+        font: inherit;
+        padding: 0;
+      }
+      .xref:hover {
+        color: #0f4c45;
+      }
+      .ok {
+        color: var(--ok);
+      }
+      @keyframes reveal {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @media (max-width: 1120px) {
+        .control-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .field.span-2,
+        .field.span-3 {
+          grid-column: span 2;
+        }
+        .layout {
+          grid-template-columns: 1fr;
+        }
+        #graph-wrap {
+          height: 56vh;
+        }
+        .detail {
+          height: auto;
+          max-height: 48vh;
+        }
+      }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <h1>Temple Atlas</h1>
+        <p>Interactive knowledge graph explorer for Temple memory data. Load entities and relations, filter by scope and type, and drill into linked notes.</p>
+      </section>
+
+      <section class="controls">
+        <div class="control-grid">
+          <div class="field span-2">
+            <label for="baseUrl">Temple Base URL</label>
+            <input id="baseUrl" type="text" />
+          </div>
+          <div class="field span-2">
+            <label for="apiKey">API Key (optional in dev)</label>
+            <input id="apiKey" type="password" placeholder="Bearer token for auth-enabled servers"/>
+          </div>
+          <div class="field">
+            <label for="scopeFilter">Scope Filter</label>
+            <select id="scopeFilter">
+              <option value="all">all scopes</option>
+              <option value="global">global</option>
+              <option value="project">project</option>
+              <option value="session">session</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="typeFilter">Entity Type</label>
+            <select id="typeFilter">
+              <option value="all">all types</option>
+            </select>
+          </div>
+          <div class="field span-2">
+            <label for="searchInput">Search Nodes</label>
+            <input id="searchInput" type="text" placeholder="name, scope, or observation text"/>
+          </div>
+          <div class="field">
+            <label>&nbsp;</label>
+            <button id="loadBtn" type="button">Load Graph</button>
+          </div>
+          <div class="field">
+            <label>&nbsp;</label>
+            <button id="resetBtn" class="secondary" type="button">Reset View</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="layout">
+        <article class="panel">
+          <header class="panel-head">
+            <h2 class="panel-title">Graph View</h2>
+            <span id="status" class="status">idle</span>
+          </header>
+          <div id="graph-wrap">
+            <svg id="graph" aria-label="Temple graph visualization"></svg>
+            <div id="emptyState" class="empty">Click <strong>Load Graph</strong> to fetch data.</div>
+          </div>
+        </article>
+
+        <aside class="panel">
+          <header class="panel-head">
+            <h2 class="panel-title">Inspector</h2>
+            <span id="loadHealth" class="status">No data loaded</span>
+          </header>
+          <div class="detail">
+            <div class="stats">
+              <div class="stat">
+                <div class="label">Entities</div>
+                <div class="value" id="entityCount">0</div>
+              </div>
+              <div class="stat">
+                <div class="label">Relations</div>
+                <div class="value" id="relationCount">0</div>
+              </div>
+              <div class="stat">
+                <div class="label">Scopes</div>
+                <div class="value" id="scopeCount">0</div>
+              </div>
+            </div>
+
+            <div class="legend">
+              <span class="legend-item"><span class="dot" style="background: var(--global)"></span>Global</span>
+              <span class="legend-item"><span class="dot" style="background: var(--project)"></span>Project</span>
+              <span class="legend-item"><span class="dot" style="background: var(--session)"></span>Session</span>
+            </div>
+
+            <div id="nodeDetail" class="block">
+              <h4>Selection</h4>
+              <p style="margin:0;color:var(--muted)">Select a node to inspect observations and cross-links.</p>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </div>
+
+    <script>
+      (() => {
+        const baseUrlInput = document.getElementById("baseUrl");
+        const apiKeyInput = document.getElementById("apiKey");
+        const scopeFilter = document.getElementById("scopeFilter");
+        const typeFilter = document.getElementById("typeFilter");
+        const searchInput = document.getElementById("searchInput");
+        const loadBtn = document.getElementById("loadBtn");
+        const resetBtn = document.getElementById("resetBtn");
+        const statusEl = document.getElementById("status");
+        const healthEl = document.getElementById("loadHealth");
+        const emptyState = document.getElementById("emptyState");
+        const nodeDetail = document.getElementById("nodeDetail");
+        const entityCountEl = document.getElementById("entityCount");
+        const relationCountEl = document.getElementById("relationCount");
+        const scopeCountEl = document.getElementById("scopeCount");
+        const svg = d3.select("#graph");
+
+        baseUrlInput.value = window.location.origin;
+
+        const state = {
+          raw: null,
+          nodes: [],
+          links: [],
+          filteredNodes: [],
+          filteredLinks: [],
+          selectedNodeId: null,
+          simulation: null,
+          zoomLayer: null,
+          linkLayer: null,
+          nodeLayer: null,
+          labelLayer: null,
+        };
+
+        function setStatus(text, isOk = false) {
+          statusEl.textContent = text;
+          statusEl.classList.toggle("ok", isOk);
+        }
+
+        function scopeClass(scope) {
+          if (!scope || scope === "global") {
+            return "global";
+          }
+          if (scope.startsWith("project:")) {
+            return "project";
+          }
+          if (scope.startsWith("session:")) {
+            return "session";
+          }
+          return "global";
+        }
+
+        function scopeColor(scope) {
+          const cls = scopeClass(scope);
+          if (cls === "project") return getComputedStyle(document.documentElement).getPropertyValue("--project").trim();
+          if (cls === "session") return getComputedStyle(document.documentElement).getPropertyValue("--session").trim();
+          return getComputedStyle(document.documentElement).getPropertyValue("--global").trim();
+        }
+
+        function nodeId(name, scope) {
+          return `${scope || "global"}::${name}`;
+        }
+
+        function buildGraph(payload) {
+          const entities = Array.isArray(payload.entities) ? payload.entities : [];
+          const relations = Array.isArray(payload.relations) ? payload.relations : [];
+
+          const nodes = entities.map((entity) => {
+            const id = nodeId(entity.name, entity.scope || "global");
+            return {
+              id,
+              name: entity.name,
+              scope: entity.scope || "global",
+              entity_type: entity.entity_type || "unknown",
+              observations: Array.isArray(entity.observations) ? entity.observations : [],
+              created_at: entity.created_at || "",
+              updated_at: entity.updated_at || "",
+              degree: 0,
+            };
+          });
+
+          const byId = new Map(nodes.map((n) => [n.id, n]));
+          const byName = new Map();
+          nodes.forEach((n) => {
+            const arr = byName.get(n.name) || [];
+            arr.push(n);
+            byName.set(n.name, arr);
+          });
+
+          const links = [];
+          const seen = new Set();
+          relations.forEach((rel) => {
+            const srcScope = rel.source_scope || rel.scope || "global";
+            const tgtScope = rel.target_scope || rel.scope || null;
+            const sourceId = nodeId(rel.source, srcScope);
+            let targetId = null;
+
+            if (tgtScope && byId.has(nodeId(rel.target, tgtScope))) {
+              targetId = nodeId(rel.target, tgtScope);
+            } else if (byId.has(nodeId(rel.target, rel.scope || "global"))) {
+              targetId = nodeId(rel.target, rel.scope || "global");
+            } else {
+              const candidates = byName.get(rel.target) || [];
+              if (candidates.length === 1) {
+                targetId = candidates[0].id;
+              } else if (candidates.length > 1) {
+                const match = candidates.find((c) => c.scope === srcScope) || candidates[0];
+                targetId = match.id;
+              }
+            }
+
+            if (!byId.has(sourceId) || !targetId || !byId.has(targetId)) {
+              return;
+            }
+
+            const key = `${sourceId}|${targetId}|${rel.relation_type}|${rel.scope || ""}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+
+            links.push({
+              source: sourceId,
+              target: targetId,
+              relation_type: rel.relation_type || "related_to",
+              scope: rel.scope || "",
+            });
+          });
+
+          links.forEach((l) => {
+            const src = byId.get(l.source);
+            const tgt = byId.get(l.target);
+            if (src) src.degree += 1;
+            if (tgt) tgt.degree += 1;
+          });
+
+          return { nodes, links };
+        }
+
+        function populateTypeFilter(nodes) {
+          const current = typeFilter.value;
+          typeFilter.innerHTML = "";
+          const all = document.createElement("option");
+          all.value = "all";
+          all.textContent = "all types";
+          typeFilter.appendChild(all);
+
+          const types = [...new Set(nodes.map((n) => n.entity_type).filter(Boolean))].sort();
+          types.forEach((type) => {
+            const option = document.createElement("option");
+            option.value = type;
+            option.textContent = type;
+            typeFilter.appendChild(option);
+          });
+          typeFilter.value = types.includes(current) ? current : "all";
+        }
+
+        function applyFilters() {
+          if (!state.raw) return;
+
+          const scopeValue = scopeFilter.value;
+          const typeValue = typeFilter.value;
+          const needle = searchInput.value.trim().toLowerCase();
+
+          const nodes = state.nodes.filter((n) => {
+            const scopeOk = scopeValue === "all" ? true : scopeClass(n.scope) === scopeValue;
+            const typeOk = typeValue === "all" ? true : n.entity_type === typeValue;
+            const text = `${n.name} ${n.scope} ${n.observations.join(" ")}`.toLowerCase();
+            const searchOk = needle ? text.includes(needle) : true;
+            return scopeOk && typeOk && searchOk;
+          });
+
+          const allowed = new Set(nodes.map((n) => n.id));
+          const links = state.links.filter((l) => allowed.has(l.source) && allowed.has(l.target));
+
+          state.filteredNodes = nodes;
+          state.filteredLinks = links;
+          drawGraph();
+          renderStats();
+          renderSelection();
+        }
+
+        function renderStats() {
+          const nodes = state.filteredNodes;
+          const links = state.filteredLinks;
+          const scopes = new Set(nodes.map((n) => n.scope));
+          entityCountEl.textContent = String(nodes.length);
+          relationCountEl.textContent = String(links.length);
+          scopeCountEl.textContent = String(scopes.size);
+        }
+
+        function fitView() {
+          const graphEl = document.getElementById("graph");
+          const bounds = graphEl.getBoundingClientRect();
+          const width = bounds.width || 900;
+          const height = bounds.height || 600;
+          svg.attr("viewBox", `0 0 ${width} ${height}`);
+          return { width, height };
+        }
+
+        function renderSelection() {
+          const node = state.filteredNodes.find((n) => n.id === state.selectedNodeId);
+          if (!node) {
+            nodeDetail.innerHTML = '<h4>Selection</h4><p style="margin:0;color:var(--muted)">Select a node to inspect observations and cross-links.</p>';
+            return;
+          }
+
+          const outgoing = state.filteredLinks.filter((l) => l.source.id ? l.source.id === node.id : l.source === node.id);
+          const incoming = state.filteredLinks.filter((l) => l.target.id ? l.target.id === node.id : l.target === node.id);
+          const byId = new Map(state.filteredNodes.map((n) => [n.id, n]));
+
+          function linkList(entries, kind) {
+            if (!entries.length) return "<p style=\\"margin:0;color:var(--muted)\\">none</p>";
+            const items = entries.map((link) => {
+              const targetId = kind === "out"
+                ? (link.target.id || link.target)
+                : (link.source.id || link.source);
+              const target = byId.get(targetId);
+              const label = target ? `${target.name} (${target.scope})` : targetId;
+              const rel = link.relation_type || "related_to";
+              return `<li>${rel} -> <button class=\\"xref\\" data-node-id=\\"${targetId}\\">${label}</button></li>`;
+            }).join("");
+            return `<ul class=\\"list\\">${items}</ul>`;
+          }
+
+          const obsItems = node.observations.length
+            ? `<ul class="list">${node.observations.map((o) => `<li>${o}</li>`).join("")}</ul>`
+            : '<p style="margin:0;color:var(--muted)">none</p>';
+
+          nodeDetail.innerHTML = `
+            <h3>${node.name}</h3>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <span class="pill">${node.entity_type}</span>
+              <span class="pill">${node.scope}</span>
+              <span class="pill">degree ${node.degree}</span>
+            </div>
+            <div class="block">
+              <h4>Observations</h4>
+              ${obsItems}
+            </div>
+            <div class="block">
+              <h4>Outgoing Relations</h4>
+              ${linkList(outgoing, "out")}
+            </div>
+            <div class="block">
+              <h4>Incoming Relations</h4>
+              ${linkList(incoming, "in")}
+            </div>
+          `;
+
+          nodeDetail.querySelectorAll(".xref").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              const id = btn.getAttribute("data-node-id");
+              state.selectedNodeId = id;
+              renderSelection();
+              drawGraph();
+            });
+          });
+        }
+
+        function drawGraph() {
+          const nodes = state.filteredNodes.map((n) => ({ ...n }));
+          const links = state.filteredLinks.map((l) => ({ ...l }));
+
+          if (!nodes.length) {
+            emptyState.style.display = "grid";
+          } else {
+            emptyState.style.display = "none";
+          }
+
+          const { width, height } = fitView();
+          svg.selectAll("*").remove();
+
+          state.zoomLayer = svg.append("g");
+          state.linkLayer = state.zoomLayer.append("g").attr("stroke-linecap", "round");
+          state.nodeLayer = state.zoomLayer.append("g");
+          state.labelLayer = state.zoomLayer.append("g");
+
+          const zoom = d3.zoom().scaleExtent([0.2, 4]).on("zoom", (event) => {
+            state.zoomLayer.attr("transform", event.transform);
+          });
+          svg.call(zoom);
+
+          const simulation = d3.forceSimulation(nodes)
+            .force("link", d3.forceLink(links).id((d) => d.id).distance(92).strength(0.22))
+            .force("charge", d3.forceManyBody().strength(-250))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collide", d3.forceCollide().radius((d) => 9 + Math.min(d.degree, 8)));
+          state.simulation = simulation;
+
+          const linkSel = state.linkLayer.selectAll("line")
+            .data(links)
+            .join("line")
+            .attr("stroke", "var(--edge)")
+            .attr("stroke-opacity", 0.42)
+            .attr("stroke-width", (d) => d.relation_type ? 1.5 : 1);
+
+          const nodeSel = state.nodeLayer.selectAll("circle")
+            .data(nodes, (d) => d.id)
+            .join("circle")
+            .attr("r", (d) => 6 + Math.min(d.degree, 8))
+            .attr("fill", (d) => scopeColor(d.scope))
+            .attr("stroke", "var(--ring)")
+            .attr("stroke-width", (d) => d.id === state.selectedNodeId ? 2.4 : 1.1)
+            .style("cursor", "pointer")
+            .on("click", (_, d) => {
+              state.selectedNodeId = d.id;
+              renderSelection();
+              drawGraph();
+            })
+            .call(
+              d3.drag()
+                .on("start", (event, d) => {
+                  if (!event.active) simulation.alphaTarget(0.3).restart();
+                  d.fx = d.x;
+                  d.fy = d.y;
+                })
+                .on("drag", (event, d) => {
+                  d.fx = event.x;
+                  d.fy = event.y;
+                })
+                .on("end", (event, d) => {
+                  if (!event.active) simulation.alphaTarget(0);
+                  d.fx = null;
+                  d.fy = null;
+                })
+            );
+
+          const labels = state.labelLayer.selectAll("text")
+            .data(nodes)
+            .join("text")
+            .text((d) => d.name)
+            .attr("font-size", 11)
+            .attr("font-weight", 500)
+            .attr("font-family", "IBM Plex Sans, sans-serif")
+            .attr("fill", "#203028")
+            .attr("paint-order", "stroke")
+            .attr("stroke", "rgba(252,251,248,0.85)")
+            .attr("stroke-width", 3)
+            .attr("stroke-linecap", "round")
+            .attr("stroke-linejoin", "round");
+
+          simulation.on("tick", () => {
+            linkSel
+              .attr("x1", (d) => d.source.x)
+              .attr("y1", (d) => d.source.y)
+              .attr("x2", (d) => d.target.x)
+              .attr("y2", (d) => d.target.y);
+
+            nodeSel
+              .attr("cx", (d) => d.x)
+              .attr("cy", (d) => d.y);
+
+            labels
+              .attr("x", (d) => d.x + 10)
+              .attr("y", (d) => d.y + 3);
+          });
+        }
+
+        async function loadGraph() {
+          const baseUrl = baseUrlInput.value.trim().replace(/\\/$/, "");
+          const apiKey = apiKeyInput.value.trim();
+          if (!baseUrl) {
+            setStatus("base URL missing");
+            return;
+          }
+
+          const url = `${baseUrl}/api/v1/admin/graph/export`;
+          const headers = {};
+          if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+          setStatus("loading...");
+          healthEl.textContent = "Fetching graph export";
+          try {
+            const response = await fetch(url, { headers });
+            if (!response.ok) {
+              const text = await response.text();
+              throw new Error(`HTTP ${response.status}: ${text.slice(0, 180)}`);
+            }
+            const payload = await response.json();
+            state.raw = payload;
+            const graph = buildGraph(payload);
+            state.nodes = graph.nodes;
+            state.links = graph.links;
+            populateTypeFilter(state.nodes);
+            state.selectedNodeId = null;
+            applyFilters();
+            setStatus("loaded", true);
+            healthEl.textContent = `Loaded ${state.nodes.length} nodes / ${state.links.length} links`;
+          } catch (err) {
+            console.error(err);
+            setStatus("load failed");
+            healthEl.textContent = String(err.message || err);
+            state.raw = null;
+            state.nodes = [];
+            state.links = [];
+            state.filteredNodes = [];
+            state.filteredLinks = [];
+            drawGraph();
+            renderStats();
+            renderSelection();
+          }
+        }
+
+        loadBtn.addEventListener("click", loadGraph);
+        resetBtn.addEventListener("click", () => {
+          scopeFilter.value = "all";
+          typeFilter.value = "all";
+          searchInput.value = "";
+          applyFilters();
+        });
+        scopeFilter.addEventListener("change", applyFilters);
+        typeFilter.addEventListener("change", applyFilters);
+        searchInput.addEventListener("input", applyFilters);
+        window.addEventListener("resize", () => {
+          if (state.raw) drawGraph();
+        });
+      })();
+    </script>
+  </body>
+</html>
+"""
 
 
 def create_app(
@@ -186,6 +1014,9 @@ def create_app(
   </body>
 </html>""",
         )
+
+    async def atlas(_: Request) -> HTMLResponse:
+        return HTMLResponse(_build_atlas_html())
 
     async def store_memory(request: Request) -> JSONResponse:
         auth = require_auth(request)
@@ -401,6 +1232,21 @@ def create_app(
             return auth
         return JSONResponse(app_broker.get_stats())
 
+    async def export_graph(request: Request) -> JSONResponse:
+        auth = require_auth(request)
+        if auth:
+            return auth
+        scope = request.query_params.get("scope")
+        limit_raw = request.query_params.get("limit", "10000")
+        try:
+            limit = max(1, min(int(limit_raw), 50000))
+        except ValueError:
+            return error("limit must be an integer", status=422)
+        try:
+            return JSONResponse(app_broker.export_knowledge_graph(scope=scope, limit=limit))
+        except ValueError as e:
+            return error(str(e), status=422)
+
     async def get_graph_schema_status(request: Request) -> JSONResponse:
         auth = require_auth(request)
         if auth:
@@ -421,6 +1267,7 @@ def create_app(
         Route("/health", health, methods=["GET"]),
         Route("/openapi.json", openapi, methods=["GET"]),
         Route("/docs", docs, methods=["GET"]),
+        Route("/atlas", atlas, methods=["GET"]),
         Route("/api/v1/memory/store", store_memory, methods=["POST"]),
         Route("/api/v1/memory/retrieve", retrieve_memory, methods=["POST"]),
         Route("/api/v1/memory/search", search_memories, methods=["POST"]),
@@ -440,6 +1287,7 @@ def create_app(
         Route("/api/v1/context/projects", list_projects, methods=["GET"]),
         Route("/api/v1/context/sessions", list_sessions, methods=["GET"]),
         Route("/api/v1/admin/stats", get_stats, methods=["GET"]),
+        Route("/api/v1/admin/graph/export", export_graph, methods=["GET"]),
         Route("/api/v1/admin/graph-schema", get_graph_schema_status, methods=["GET"]),
         Route("/api/v1/admin/graph-schema/migrate", migrate_graph_schema, methods=["POST"]),
     ]

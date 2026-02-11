@@ -201,3 +201,23 @@ def test_graph_schema_status_and_migration_noop(broker):
     migration = broker.migrate_graph_schema()
     assert migration["migrated"] is False
     assert migration["reason"] == "already_v2"
+
+
+def test_export_knowledge_graph_includes_scoped_relations(broker):
+    """Graph export returns entities and scoped relation metadata."""
+    broker.create_entities([
+        {"name": "Temple", "entity_type": "project", "observations": ["Memory broker"]},
+        {"name": "Claude", "entity_type": "agent", "observations": ["MCP client"]},
+    ])
+    broker.create_relations([
+        {"source": "Claude", "target": "Temple", "relation_type": "uses"},
+    ])
+
+    exported = broker.export_knowledge_graph()
+    assert exported["entity_count"] >= 2
+    assert exported["relation_count"] >= 1
+    relation = exported["relations"][0]
+    assert relation["source"] == "Claude"
+    assert relation["relation_type"] == "uses"
+    assert "source_scope" in relation
+    assert "target_scope" in relation

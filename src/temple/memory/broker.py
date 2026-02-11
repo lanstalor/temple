@@ -527,6 +527,67 @@ class MemoryBroker:
             "active_context": self.get_context(),
         }
 
+    def export_knowledge_graph(
+        self,
+        scope: str | None = None,
+        limit: int = 10000,
+    ) -> dict[str, Any]:
+        """Export entities and outgoing relations for visualization/backup."""
+        self._maybe_cleanup_expired_sessions(force=True)
+        normalized_scope = self._context.parse_scope(scope).scope_key if scope else None
+        entities = self._graph_store.search_entities(scope=normalized_scope, limit=limit)
+
+        entity_scope_by_name: dict[str, set[str]] = {}
+        for entity in entities:
+            entity_scope_by_name.setdefault(entity["name"], set()).add(entity["scope"])
+
+        seen_relations: set[tuple[str, str, str, str, str, str | None]] = set()
+        all_relations: list[dict[str, Any]] = []
+        for entity in entities:
+            source_scope = entity["scope"]
+            relations = self._graph_store.get_relations(
+                entity["name"],
+                direction="out",
+                scope=source_scope,
+            )
+            for rel in relations:
+                target_name = rel["target"]
+                target_scope = self._resolve_export_target_scope(
+                    target_name=target_name,
+                    relation_scope=rel["scope"],
+                    known_scopes=entity_scope_by_name,
+                )
+                key = (
+                    rel["source"],
+                    source_scope,
+                    rel["target"],
+                    target_scope or "",
+                    rel["relation_type"],
+                    rel["scope"],
+                )
+                if key in seen_relations:
+                    continue
+                seen_relations.add(key)
+                all_relations.append(
+                    {
+                        "source": rel["source"],
+                        "source_scope": source_scope,
+                        "target": rel["target"],
+                        "target_scope": target_scope,
+                        "relation_type": rel["relation_type"],
+                        "scope": rel["scope"],
+                        "created_at": rel.get("created_at", ""),
+                    }
+                )
+
+        return {
+            "entities": entities,
+            "relations": all_relations,
+            "entity_count": len(entities),
+            "relation_count": len(all_relations),
+            "scope": normalized_scope or "all",
+        }
+
     def health_check(self) -> dict[str, Any]:
         """Check system health."""
         self._maybe_cleanup_expired_sessions()
@@ -599,6 +660,22 @@ class MemoryBroker:
     def _scope_keys_for_graph_reads(self) -> list[str]:
         """Resolve graph scope keys in highest-precedence-first order."""
         return [scope.scope_key for scope in reversed(self._context.get_retrieval_scopes())]
+
+    def _resolve_export_target_scope(
+        self,
+        target_name: str,
+        relation_scope: str,
+        known_scopes: dict[str, set[str]],
+    ) -> str | None:
+        """Pick a target scope for relation export when duplicate names exist."""
+        scopes = known_scopes.get(target_name, set())
+        if not scopes:
+            return None
+        if relation_scope in scopes:
+            return relation_scope
+        if len(scopes) == 1:
+            return next(iter(scopes))
+        return None
 
     def _session_expiration_cutoff(self) -> datetime | None:
         """Return the TTL cutoff timestamp, or None when expiration is disabled."""
