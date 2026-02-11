@@ -558,7 +558,53 @@ def _build_atlas_html() -> str:
         const scopeCountEl = document.getElementById("scopeCount");
         const svg = d3.select("#graph");
 
-        baseUrlInput.value = window.location.origin;
+        const storageKeys = {
+          baseUrl: "temple.atlas.base_url",
+          apiKey: "temple.atlas.api_key",
+        };
+
+        function safeStorageGet(key) {
+          try {
+            return window.localStorage.getItem(key) || "";
+          } catch (_) {
+            return "";
+          }
+        }
+
+        function safeStorageSet(key, value) {
+          try {
+            if (value) {
+              window.localStorage.setItem(key, value);
+            } else {
+              window.localStorage.removeItem(key);
+            }
+          } catch (_) {
+            // Ignore storage failures (private mode or policy restrictions).
+          }
+        }
+
+        function normalizeBaseUrl(value) {
+          return value.trim().replace(/\\/$/, "");
+        }
+
+        function restoreAuthInputs() {
+          const savedBaseUrl = normalizeBaseUrl(safeStorageGet(storageKeys.baseUrl));
+          const savedApiKey = safeStorageGet(storageKeys.apiKey).trim();
+
+          baseUrlInput.value = savedBaseUrl || window.location.origin;
+          apiKeyInput.value = savedApiKey;
+
+          return { hasSavedApiKey: Boolean(savedApiKey) };
+        }
+
+        function persistAuthInputs() {
+          const baseUrl = normalizeBaseUrl(baseUrlInput.value || "");
+          const apiKey = (apiKeyInput.value || "").trim();
+          safeStorageSet(storageKeys.baseUrl, baseUrl);
+          safeStorageSet(storageKeys.apiKey, apiKey);
+        }
+
+        const restored = restoreAuthInputs();
 
         const state = {
           raw: null,
@@ -983,7 +1029,7 @@ def _build_atlas_html() -> str:
         }
 
         async function loadGraph() {
-          const baseUrl = baseUrlInput.value.trim().replace(/\\/$/, "");
+          const baseUrl = normalizeBaseUrl(baseUrlInput.value || "");
           const apiKey = apiKeyInput.value.trim();
           if (!baseUrl) {
             setStatus("base URL missing");
@@ -1010,6 +1056,7 @@ def _build_atlas_html() -> str:
             populateTypeFilter(state.nodes);
             state.selectedNodeId = null;
             applyFilters();
+            persistAuthInputs();
             setStatus("loaded", true);
             healthEl.textContent = `Loaded ${state.nodes.length} nodes / ${state.links.length} links`;
             if (!state.nodes.length) {
@@ -1040,9 +1087,15 @@ def _build_atlas_html() -> str:
         scopeFilter.addEventListener("change", applyFilters);
         typeFilter.addEventListener("change", applyFilters);
         searchInput.addEventListener("input", applyFilters);
+        baseUrlInput.addEventListener("change", persistAuthInputs);
+        apiKeyInput.addEventListener("change", persistAuthInputs);
         window.addEventListener("resize", () => {
           if (state.raw) drawGraph();
         });
+
+        if (restored.hasSavedApiKey) {
+          loadGraph();
+        }
       })();
     </script>
   </body>
